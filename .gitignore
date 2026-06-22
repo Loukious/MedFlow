@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+data/chroma/
+data/kaggle/
+*.pyc
+.env
+*.pdf
+.cache/
+.streamlit/
+*.egg-info

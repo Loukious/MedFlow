@@ -11,8 +11,11 @@ This milestone implementation keeps the red-team code separate from the Streamli
 - `src/medflow_redteam/docker_lab.py` manages the Docker lab.
 - `src/medflow_redteam/tools.py` contains the safe local tools used by the agent graph.
 - `src/medflow_redteam/langgraph_lab.py` defines the LangGraph workflow.
+- `src/medflow_redteam/campaign.py` defines the role-separated multi-agent campaign workflow.
 - `scripts/run_langgraph_redteam_lab.py` is the CLI entry point.
+- `scripts/run_redteam_campaign.py` is the CLI entry point for high-level campaign orchestration.
 - `reports/redteam_lab/` stores JSON and Markdown run outputs.
+- `reports/redteam_campaign/` stores JSON and Markdown campaign outputs.
 
 ## Lab Isolation
 
@@ -29,7 +32,7 @@ The launcher also requests localhost port bindings for convenience, but in this 
 
 ## Agent Flow
 
-The LangGraph workflow runs these nodes in order:
+The LangGraph lab workflow runs these nodes in order:
 
 1. `recon_connectivity`: checks TCP connectivity to allowed lab ports.
 2. `recon_nmap`: runs safe service discovery with `nmap -sV -Pn --version-light`.
@@ -42,6 +45,30 @@ The LangGraph workflow runs these nodes in order:
 9. `report`: asks the selected LLM to produce a concise validation report.
 
 The workflow is intentionally validation-focused. It does not run exploit modules, credential theft, persistence, evasion, destructive actions, or attacks against non-lab systems.
+
+## Multi-Agent Campaign Flow
+
+The campaign workflow converts a high-level red-team goal into a role-separated campaign plan. It is separate from the lab exploitation workflow so campaign planning can remain useful even when no live target is supplied.
+
+The campaign graph runs these cooperating agents:
+
+1. `Campaign Orchestrator Agent`: defines the campaign charter, phases, role tasking, constraints, and success criteria.
+2. `Reconnaissance Agent`: collects or plans attack-surface evidence. With `--execute-recon`, it can run active TCP, Nmap, and HTTP probes against an allowlisted target.
+3. `Identity Attack Agent`: models safe identity validation paths using BloodHound, SharpHound, Impacket, Kerbrute, IdP telemetry, and SIEM evidence as tool families.
+4. `Web/API Attack Agent`: designs healthcare portal and API validation using Burp Suite, OWASP ZAP, Postman, and HTTP evidence as tool families.
+5. `Blockchain Security Agent`: decides whether blockchain is in scope, and if so plans smart-contract and wallet/event-log validation using Slither, Mythril, and Hardhat as tool families.
+6. `Reporting Agent`: merges the role handoffs into executive and technical campaign reporting with safety constraints, evidence, limitations, and next work.
+
+Each role produces a structured JSON handoff with:
+
+- `role`
+- `objective`
+- `tools`
+- `decisions`
+- `outputs`
+- `handoff`
+
+The role agents share retrieved ATT&CK/MedFlow context and prior agent outputs. This gives the project the “AI agents decide, security tools execute” shape requested in the milestone while keeping tool execution gated by allowlists and safety policy.
 
 The exploitation phase is opt-in. The graph first chooses from the generated capability inventory using tool output. The current inventory sources are:
 
@@ -194,6 +221,24 @@ Run a broader lab-only validation pass:
 
 ```bash
 sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --skip-safe-scripts --exploit-validation --max-exploits 10 --execution-mode aggressive_lab --use-sudo
+```
+
+Run the multi-agent campaign planner without active probing:
+
+```bash
+python scripts/run_redteam_campaign.py "Validate identity and web attack paths against the hospital employee portal" --provider llama --report
+```
+
+Run the campaign planner with active allowlisted reconnaissance:
+
+```bash
+python scripts/run_redteam_campaign.py "Validate identity and web attack paths against the hospital employee portal" --target 172.29.10.10 --execute-recon --provider llama --report --traces
+```
+
+Run a fast deterministic campaign demo without LLM calls:
+
+```bash
+python scripts/run_redteam_campaign.py "Validate identity and web attack paths against the hospital employee portal" --target 172.29.10.10 --execute-recon --no-llm
 ```
 
 For a cleaner demo output, omit `--sources --traces`:

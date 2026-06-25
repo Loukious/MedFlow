@@ -4,6 +4,7 @@ This project follows `Presentation 1.pdf`: it builds four Chroma vector database
 
 For a detailed explanation of every feature, see `FUNCTIONALITY_GUIDE.md`.
 For the expanded healthcare cybersecurity source catalog, see `HEALTHCARE_DATA_SOURCES.md`.
+For the Milestone 2 red-team framework comparison, see `REDTEAM_FRAMEWORK_COMPARISON.md`.
 
 ## What Is Included
 

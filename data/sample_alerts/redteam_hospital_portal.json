@@ -1,0 +1,29 @@
+{
+  "name": "Authorized Hospital Portal Red-Team Validation",
+  "objective": "Validate whether a hospital employee portal is resilient against identity-focused intrusion paths involving password spraying, MFA fatigue, session abuse, and device registration abuse using synthetic telemetry and tabletop/purple-team control checks.",
+  "environment": "Fictional MedFlow hospital network used for a sanctioned tabletop/purple-team exercise.",
+  "scope": [
+    "Externally exposed employee portal",
+    "Identity provider sign-in flow",
+    "MFA prompt telemetry",
+    "Device registration events",
+    "SIEM detections and incident response handoff",
+    "Synthetic identity and portal telemetry only"
+  ],
+  "out_of_scope": [
+    "Exploit code",
+    "Credential theft",
+    "Bypassing MFA in a real environment",
+    "Running offensive tools against live systems",
+    "Attempting real logins or sending real MFA prompts",
+    "Persistence, evasion, or destructive actions"
+  ],
+  "sample_telemetry": [
+    "Multiple failed logins for nursing and billing users from a new ASN",
+    "Repeated MFA push prompts issued to the same account within 12 minutes",
+    "One MFA approval after several denied prompts",
+    "New device registration shortly after the approval",
+    "Portal session created from a location not previously associated with the user"
+  ],
+  "deliverable": "Safe red-team validation plan with ATT&CK mapping, telemetry to collect, expected detections, response checks, and report-ready findings."
+}

@@ -4,6 +4,9 @@ __pycache__/
 .ruff_cache/
 data/chroma/
 data/kaggle/
+data/capabilities/
+data/capability_sources/
+reports/
 *.pyc
 .env
 *.pdf

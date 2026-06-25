@@ -11,11 +11,18 @@ class LLMError(RuntimeError):
 
 
 class GroqLLM:
-    def __init__(self, api_key: str | None, model: str, hide_reasoning: bool = False) -> None:
+    def __init__(
+        self,
+        api_key: str | None,
+        model: str,
+        hide_reasoning: bool = False,
+        max_completion_tokens: int = 2048,
+    ) -> None:
         if not api_key:
             raise RuntimeError("Missing Groq API key. Set GroqAPIKey or GROQ_API_KEY in .env.")
         self.model = model
         self.hide_reasoning = hide_reasoning
+        self.max_completion_tokens = max_completion_tokens
         self.client = Groq(api_key=api_key)
 
     def generate(self, prompt: str) -> str:
@@ -29,7 +36,7 @@ class GroqLLM:
                 {"role": "user", "content": prompt},
             ],
             "temperature": 0.2,
-            "max_completion_tokens": 2048,
+            "max_completion_tokens": self.max_completion_tokens,
         }
         if self.hide_reasoning:
             request["reasoning_format"] = "hidden"
@@ -41,11 +48,22 @@ def strip_thinking(text: str) -> str:
     return re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL).strip()
 
 
-def make_llm(provider: str, groq_api_key: str | None, llama_model: str, qwen_model: str):
+def make_llm(
+    provider: str,
+    groq_api_key: str | None,
+    llama_model: str,
+    qwen_model: str,
+    max_completion_tokens: int = 2048,
+):
     if provider == "llama":
-        return GroqLLM(groq_api_key, llama_model)
+        return GroqLLM(groq_api_key, llama_model, max_completion_tokens=max_completion_tokens)
     if provider in {"qwen", "groq"}:
-        return GroqLLM(groq_api_key, qwen_model, hide_reasoning=True)
+        return GroqLLM(
+            groq_api_key,
+            qwen_model,
+            hide_reasoning=True,
+            max_completion_tokens=max_completion_tokens,
+        )
     raise ValueError(f"Unknown LLM provider '{provider}'. Choose llama or qwen.")
 
 

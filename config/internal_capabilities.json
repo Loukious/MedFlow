@@ -1,0 +1,42 @@
+{
+  "proof_marker": "/tmp/medflow_langgraph_exploit_poc",
+  "capabilities": [
+    {
+      "id": "unrealircd_3281_rce",
+      "name": "UnrealIRCd 3.2.8.1 controlled command-execution proof",
+      "runner": "irc_backdoor_command",
+      "risk": "lab-only controlled exploitation",
+      "match": {
+        "service": "irc",
+        "ports": ["6667"],
+        "product_keywords": ["unrealircd", "irc"]
+      },
+      "proof_goal": "Create a temporary proof file containing the output of `id` through the IRC service.",
+      "proof_command": "id > {marker}"
+    },
+    {
+      "id": "ftp_anonymous_access",
+      "name": "FTP anonymous access validation",
+      "runner": "ftp_anonymous_login",
+      "risk": "safe exposure validation",
+      "match": {
+        "service": "ftp",
+        "ports": ["21"],
+        "product_keywords": ["ftp", "proftpd"]
+      },
+      "proof_goal": "Attempt anonymous FTP login and record whether anonymous access is exposed."
+    },
+    {
+      "id": "mysql_handshake_exposure",
+      "name": "MySQL unauthenticated handshake exposure validation",
+      "runner": "mysql_handshake_probe",
+      "risk": "safe exposure validation",
+      "match": {
+        "service": "mysql",
+        "ports": ["3306"],
+        "product_keywords": ["mysql"]
+      },
+      "proof_goal": "Confirm the MySQL service exposes an unauthenticated handshake banner."
+    }
+  ]
+}

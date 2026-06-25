@@ -1,0 +1,44 @@
+{
+  "safety": {
+    "default_target": "172.29.10.10",
+    "allowed_targets": ["localhost", "127.0.0.1"],
+    "allowed_cidrs": ["127.0.0.0/8", "172.29.10.0/24"]
+  },
+  "scan": {
+    "container_ports": [21, 22, 80, 443, 139, 445, 3306, 6667, 8180],
+    "host_ports": [2121, 2222, 8080, 8443, 1139, 1445, 33060, 6667, 8180],
+    "http_container_ports": [80, 443, 8180],
+    "http_host_ports": [8080, 8443, 8180]
+  },
+  "docker_lab": {
+    "image": "kirscht/metasploitable3-ub1404",
+    "network": "medflow_redteam_internal",
+    "container": "medflow-metasploitable3",
+    "subnet": "172.29.10.0/24",
+    "container_ip": "172.29.10.10",
+    "hostname": "metasploitable3",
+    "published_ports": {
+      "21": 2121,
+      "22": 2222,
+      "80": 8080,
+      "443": 8443,
+      "139": 1139,
+      "445": 1445,
+      "3306": 33060,
+      "6667": 6667,
+      "8180": 8180
+    },
+    "startup_commands": [
+      "mkdir -p /var/lock/apache2 /run/sendsigs.omit.d /var/run/apache2",
+      "service ssh start || true",
+      "service apache2 start || true",
+      "service proftpd start || true",
+      "service mysql start || true",
+      "service smbd start || true",
+      "service nmbd start || true",
+      "service rpcbind start || true",
+      "service unrealircd start || true",
+      "tail -f /dev/null"
+    ]
+  }
+}

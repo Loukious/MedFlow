@@ -1,6 +1,9 @@
 chromadb
 sentence-transformers
 groq
+langgraph
+llama-index-core
+llama-index-llms-groq
 python-dotenv
 rich
 pandas

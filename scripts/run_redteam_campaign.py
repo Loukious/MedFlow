@@ -50,6 +50,7 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
         [
             f"Agents completed: {len(run.agents)}",
             f"Services observed: {len(run.services)}",
+            f"Web routes found: {web_route_label(run)}",
             f"Capability validation: {validation_label(run)}",
             f"Retrieved sources: {len(run.sources)}",
             f"Safety review: {run.safety_review[:180] if run.safety_review else 'not run'}",
@@ -82,6 +83,20 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
             )
         console.print(validation_table)
 
+    if run.web_routes and run.web_routes.get("web_routes"):
+        routes_table = Table("URL", "Status", "Signal")
+        interesting = [
+            item for item in run.web_routes["web_routes"]
+            if item.get("status") and (item.get("status") != 404 or item.get("artifact_signal"))
+        ]
+        for item in interesting[:12]:
+            routes_table.add_row(
+                item.get("url", ""),
+                str(item.get("status", "")),
+                item.get("artifact_signal") or item.get("title") or item.get("content_type", ""),
+            )
+        console.print(routes_table)
+
     if show_traces:
         traces = Table("Tool/Agent", "Input", "Output Preview")
         for trace in run.tool_traces:
@@ -97,6 +112,13 @@ def validation_label(run: CampaignRun) -> str:
     if not validation:
         return "not requested"
     return f"{validation.get('successful', 0)}/{validation.get('attempted', 0)} verified"
+
+
+def web_route_label(run: CampaignRun) -> str:
+    routes = (run.web_routes or {}).get("web_routes", [])
+    found = [item for item in routes if item.get("status") and item.get("status") != 404]
+    artifact = [item for item in routes if item.get("artifact_signal")]
+    return f"{len(found)} non-404, {len(artifact)} artifact signal(s)"
 
 
 def main() -> None:

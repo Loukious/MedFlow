@@ -33,7 +33,11 @@ EXPLOIT_MARKER = _INTERNAL_CAPABILITIES_CONFIG["proof_marker"]
 
 
 def default_ports_for_target(target: str) -> list[int]:
-    return HOST_PORTS if target in {"127.0.0.1", "localhost"} else CONTAINER_PORTS
+    if target in {"127.0.0.1", "localhost"}:
+        return HOST_PORTS
+    if target == DEFAULT_TARGET:
+        return CONTAINER_PORTS
+    return list(range(1, 1001))
 
 
 @dataclass
@@ -67,6 +71,19 @@ class TitleParser(HTMLParser):
     @property
     def title(self) -> str:
         return " ".join(part for part in self.title_parts if part).strip()
+
+
+class LinkParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.links: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs):
+        if tag.lower() != "a":
+            return
+        for key, value in attrs:
+            if key.lower() == "href" and value:
+                self.links.append(value)
 
 
 def validate_target(target: str) -> str:
@@ -213,6 +230,89 @@ def http_probe(target: str, ports: list[int] | None = None) -> dict:
         except Exception as exc:
             output.append({"url": url, "error": repr(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)})
     return {"http_probe": output}
+
+
+COMMON_WEB_PATHS = [
+    "/",
+    "/login",
+    "/logout",
+    "/admin",
+    "/dashboard",
+    "/data",
+    "/data/0",
+    "/data/1",
+    "/download",
+    "/download/0",
+    "/download/1",
+    "/capture",
+    "/captures",
+    "/pcap",
+    "/api",
+    "/api/v1",
+    "/robots.txt",
+]
+
+
+def web_route_discovery(target: str, ports: list[int] | None = None, paths: list[str] | None = None) -> dict:
+    target = validate_target(target)
+    output = []
+    selected_ports = ports or [80, 443, 8080, 8000, 5000, 8443]
+    selected_paths = paths or COMMON_WEB_PATHS
+    seen: set[tuple[int, str]] = set()
+    for port in selected_ports:
+        scheme = "https" if port in {443, 8443} else "http"
+        for path in selected_paths:
+            normalized_path = path if path.startswith("/") else f"/{path}"
+            key = (port, normalized_path)
+            if key in seen:
+                continue
+            seen.add(key)
+            url = f"{scheme}://{target}:{port}{normalized_path}"
+            started = time.perf_counter()
+            try:
+                request = Request(url, headers={"User-Agent": "MedFlow-RedTeam-Lab/0.1"})
+                with urlopen(request, timeout=4) as response:
+                    body = response.read(8192)
+                    text = body.decode("utf-8", errors="replace")
+                    parser = TitleParser()
+                    parser.feed(text)
+                    links = LinkParser()
+                    if "text/html" in response.headers.get("Content-Type", ""):
+                        links.feed(text)
+                    output.append(
+                        {
+                            "url": url,
+                            "status": response.status,
+                            "content_type": response.headers.get("Content-Type", ""),
+                            "content_length": response.headers.get("Content-Length", ""),
+                            "title": parser.title,
+                            "links": sorted(set(links.links))[:20],
+                            "artifact_signal": artifact_signal(url, response.headers.get("Content-Type", ""), body),
+                            "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                        }
+                    )
+            except Exception as exc:
+                output.append(
+                    {
+                        "url": url,
+                        "error": str(exc),
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                    }
+                )
+    return {"web_routes": output}
+
+
+def artifact_signal(url: str, content_type: str, body: bytes) -> str:
+    lowered_url = url.lower()
+    lowered_type = content_type.lower()
+    pcap_magic = {b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x0a\x0d\x0d\x0a"}
+    if any(body.startswith(magic) for magic in pcap_magic) or "pcap" in lowered_url:
+        return "possible packet capture exposure"
+    if "download" in lowered_url and ("octet-stream" in lowered_type or not lowered_type.startswith("text/html")):
+        return "downloadable artifact"
+    if any(term in lowered_url for term in ["backup", "config", "dump", "capture"]):
+        return "sensitive path keyword"
+    return ""
 
 
 def select_exploit_candidate(target: str, services: list[dict[str, str]], limit: int = 1) -> dict:

@@ -29,6 +29,7 @@ from .tools import (
     summarize_tool_result,
     tcp_connect_check,
     validate_target,
+    web_route_discovery,
 )
 
 
@@ -56,6 +57,7 @@ class CampaignRun:
     tcp: dict[str, Any] | None = None
     services: list[dict[str, str]] = field(default_factory=list)
     http: dict[str, Any] | None = None
+    web_routes: dict[str, Any] | None = None
     capability_selection: dict[str, Any] | None = None
     capability_validation: dict[str, Any] | None = None
     safety_review: str = ""
@@ -77,6 +79,7 @@ class CampaignState(TypedDict, total=False):
     nmap_result: ToolResult
     services: list[dict[str, str]]
     http: dict[str, Any]
+    web_routes: dict[str, Any]
     capability_selection: dict[str, Any]
     capability_validation: dict[str, Any]
     sources: list[dict[str, Any]]
@@ -102,6 +105,52 @@ def compact_services(services: list[dict[str, str]]) -> str:
         f"- {item.get('port')}/{item.get('service')}: {item.get('version', '')}"
         for item in services[:12]
     )
+
+
+def http_ports_from_services(services: list[dict[str, str]]) -> list[int]:
+    ports = []
+    for service in services:
+        port = service.get("port", "")
+        label = f"{service.get('service', '')} {service.get('version', '')}".lower()
+        if not port.isdigit():
+            continue
+        numeric_port = int(port)
+        if "http" in label or numeric_port in {80, 443, 5000, 8000, 8080, 8443}:
+            ports.append(numeric_port)
+    return sorted(set(ports))
+
+
+def open_ports_from_tcp(tcp: dict[str, Any]) -> list[int]:
+    return sorted(int(port) for port, result in tcp.items() if result.get("open") and str(port).isdigit())
+
+
+def infer_services_from_ports(open_ports: list[int]) -> list[dict[str, str]]:
+    names = {
+        21: "ftp",
+        22: "ssh",
+        25: "smtp",
+        53: "domain",
+        80: "http",
+        110: "pop3",
+        139: "netbios-ssn",
+        143: "imap",
+        443: "https",
+        445: "microsoft-ds",
+        3306: "mysql",
+        5000: "http",
+        8000: "http",
+        8080: "http",
+        8443: "https",
+    }
+    return [
+        {
+            "port": str(port),
+            "protocol": "tcp",
+            "service": names.get(port, "unknown"),
+            "version": "open port inferred from TCP check",
+        }
+        for port in open_ports
+    ]
 
 
 def build_campaign_queries(goal: str, services: list[dict[str, str]] | None = None) -> list[str]:
@@ -267,21 +316,28 @@ and success criteria. Do not provide exploit instructions.
         tcp = state.get("tcp")
         services = state.get("services", [])
         http = state.get("http")
+        web_routes = state.get("web_routes")
         traces = state.get("tool_traces", [])
         steps = state.get("steps", [])
         if state.get("execute_recon") and state.get("target"):
             target = validate_target(str(state["target"]))
             ports = state.get("ports") or default_ports_for_target(target)
             tcp = tcp_connect_check(target, ports=ports)
-            nmap_result = nmap_service_scan(target, ports=ports)
+            open_ports = open_ports_from_tcp(tcp)
+            nmap_result = nmap_service_scan(target, ports=open_ports or ports)
             services = parse_nmap_open_services(nmap_result.stdout)
-            http = http_probe(target)
+            if not services and open_ports:
+                services = infer_services_from_ports(open_ports)
+            http_ports = http_ports_from_services(services)
+            http = http_probe(target, ports=http_ports or None)
+            web_routes = web_route_discovery(target, ports=http_ports or None)
             steps = [*steps, "reconnaissance agent executed TCP, Nmap, and HTTP probes against the allowlisted target"]
             traces = [
                 *traces,
                 make_trace("tcp_connect_check", target, json.dumps(tcp, indent=2)),
                 make_trace("nmap_service_scan", " ".join(nmap_result.command or []), summarize_tool_result(nmap_result)),
                 make_trace("http_probe", target, json.dumps(http, indent=2)),
+                make_trace("web_route_discovery", target, json.dumps(web_routes, indent=2)),
             ]
             sources = retrieve_many(build_campaign_queries(state["goal"], services), settings=settings, n_results=n_results)
         else:
@@ -309,11 +365,12 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
 """,
             fallback,
         )
-        output["evidence"] = {"services": services, "http": http or {}, "tcp": tcp or {}}
+        output["evidence"] = {"services": services, "http": http or {}, "web_routes": web_routes or {}, "tcp": tcp or {}}
         return {
             "tcp": tcp,
             "services": services,
             "http": http,
+            "web_routes": web_routes,
             "sources": sources,
             "agents": [*state.get("agents", []), output],
             "steps": [*steps, "reconnaissance agent produced infrastructure handoff"],
@@ -467,6 +524,7 @@ that blockchain testing is not applicable for this campaign and list only monito
             "target": state.get("target"),
             "agents": state.get("agents", []),
             "services": state.get("services", []),
+            "web_routes": state.get("web_routes", {}),
             "capability_selection": state.get("capability_selection", {}),
             "capability_validation": state.get("capability_validation", {}),
         }
@@ -627,6 +685,7 @@ def run_campaign(
             tcp=final_state.get("tcp"),
             services=final_state.get("services", []),
             http=final_state.get("http"),
+            web_routes=final_state.get("web_routes"),
             capability_selection=final_state.get("capability_selection"),
             capability_validation=final_state.get("capability_validation"),
             safety_review=final_state.get("safety_review", ""),
@@ -670,6 +729,9 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         "",
         "## Capability Validation",
         json.dumps(payload.get("capability_validation") or {"status": "not run"}, indent=2),
+        "",
+        "## Web Route Discovery",
+        json.dumps(payload.get("web_routes") or {"status": "not run"}, indent=2),
         "",
         "## Steps",
         *[f"- {step}" for step in payload.get("steps", [])],

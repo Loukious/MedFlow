@@ -49,7 +49,50 @@ def normalize_text(value: str | None) -> str:
     return (value or "").lower()
 
 
+def keyword_matches(keyword: str, observed_text: str) -> bool:
+    lowered = normalize_text(keyword).strip()
+    if not lowered:
+        return False
+    if len(lowered) <= 3:
+        return re.search(rf"(?<![a-z0-9]){re.escape(lowered)}(?![a-z0-9])", observed_text) is not None
+    return lowered in observed_text
+
+
+def has_blocked_provider_indicator(capability: dict[str, Any]) -> bool:
+    runner = capability.get("runner")
+    if runner not in {"metasploit_module", "nuclei_template"}:
+        return False
+    text = " ".join(
+        str(capability.get(key, ""))
+        for key in ["id", "name", "module_path", "template_path", "description"]
+    ).lower()
+    tokens = set(re.split(r"[^a-z0-9]+", text))
+    blocked = {
+        "brute",
+        "cred",
+        "creds",
+        "credential",
+        "credentials",
+        "dump",
+        "hash",
+        "hashdump",
+        "login",
+        "passwd",
+        "password",
+        "persistence",
+        "priv",
+        "privesc",
+        "example",
+        "relay",
+        "dos",
+    }
+    return bool(tokens & blocked)
+
+
 def capability_match_score(capability: dict[str, Any], service: dict[str, str]) -> tuple[int, list[str]]:
+    if has_blocked_provider_indicator(capability):
+        return 0, []
+
     match = capability.get("match", {})
     observed_port = normalize_text(service.get("port"))
     observed_service = normalize_text(service.get("service"))
@@ -57,20 +100,26 @@ def capability_match_score(capability: dict[str, Any], service: dict[str, str]) 
     observed_text = f"{observed_service} {observed_version}"
     score = 0
     reasons: list[str] = []
+    primary_matched = False
 
     configured_ports = {str(port) for port in match.get("ports", [])}
     if configured_ports and observed_port in configured_ports:
         score += 50
+        primary_matched = True
         reasons.append(f"port {observed_port} matched")
 
     configured_service = normalize_text(match.get("service"))
     if configured_service and observed_service == configured_service:
         score += 30
+        primary_matched = True
         reasons.append(f"service {observed_service} matched")
+
+    if (configured_ports or configured_service) and not primary_matched:
+        return 0, []
 
     for keyword in match.get("product_keywords", []):
         lowered = normalize_text(str(keyword))
-        if lowered and lowered in observed_text:
+        if keyword_matches(lowered, observed_text):
             score += 10
             reasons.append(f"keyword {lowered} matched")
 

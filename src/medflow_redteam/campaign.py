@@ -24,6 +24,8 @@ from .tools import (
     http_probe,
     nmap_service_scan,
     parse_nmap_open_services,
+    run_selected_exploit,
+    select_exploit_candidate,
     summarize_tool_result,
     tcp_connect_check,
     validate_target,
@@ -54,6 +56,8 @@ class CampaignRun:
     tcp: dict[str, Any] | None = None
     services: list[dict[str, str]] = field(default_factory=list)
     http: dict[str, Any] | None = None
+    capability_selection: dict[str, Any] | None = None
+    capability_validation: dict[str, Any] | None = None
     safety_review: str = ""
     elapsed_seconds: float = 0.0
     error: str | None = None
@@ -64,12 +68,17 @@ class CampaignState(TypedDict, total=False):
     target: str | None
     provider: str
     execute_recon: bool
+    execute_validation: bool
+    max_capabilities: int
+    execution_mode: str
     use_llm: bool
     ports: list[int]
     tcp: dict[str, Any]
     nmap_result: ToolResult
     services: list[dict[str, str]]
     http: dict[str, Any]
+    capability_selection: dict[str, Any]
+    capability_validation: dict[str, Any]
     sources: list[dict[str, Any]]
     agents: list[dict[str, Any]]
     report: str
@@ -311,6 +320,54 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             "tool_traces": [*traces, make_trace("reconnaissance_agent", state["goal"], json.dumps(output, indent=2))],
         }
 
+    def capability_validation_agent(state: CampaignState) -> CampaignState:
+        if not state.get("execute_validation", False):
+            return {"steps": append_step(state, "skipped capability validation execution")}
+        if not state.get("target"):
+            return {"steps": append_step(state, "skipped capability validation because no target was supplied")}
+        if not state.get("services"):
+            return {"steps": append_step(state, "skipped capability validation because no open services were observed")}
+
+        selection = select_exploit_candidate(
+            str(state["target"]),
+            state.get("services", []),
+            limit=state.get("max_capabilities", 5),
+        )
+        validation = run_selected_exploit(
+            str(state["target"]),
+            selection,
+            execution_mode=state.get("execution_mode", "safe"),
+        )
+        output = agent_to_dict(
+            AgentOutput(
+                role="Capability Validation Agent",
+                objective="Select and execute applicable validation capabilities from observed service evidence.",
+                tools=["Metasploit check/auxiliary adapters", "Nuclei templates", "Nmap NSE scripts", "internal validation runners"],
+                decisions=[
+                    f"Selected {len(selection.get('selected_candidates', []))} capability candidate(s).",
+                    f"Execution mode: {state.get('execution_mode', 'safe')}.",
+                    "Treat positive proof as verification; do not treat clean tool exit as exploitation success.",
+                ],
+                outputs=[
+                    f"Attempted {validation.get('attempted', 0)} validation action(s).",
+                    f"Verified {validation.get('successful', 0)} validation result(s).",
+                ],
+                handoff="Reporting Agent should include selected capabilities, failed checks, and positive evidence separately.",
+                evidence={"selection": selection, "validation": validation},
+            )
+        )
+        return {
+            "capability_selection": selection,
+            "capability_validation": validation,
+            "agents": [*state.get("agents", []), output],
+            "steps": append_step(state, "capability validation agent selected and executed matching validation tools"),
+            "tool_traces": [
+                *state.get("tool_traces", []),
+                make_trace("select_exploit_candidate", str(state["target"]), json.dumps(selection, indent=2)),
+                make_trace("run_selected_exploit", str(state["target"]), json.dumps(validation, indent=2)),
+            ],
+        }
+
     def identity_attack_agent(state: CampaignState) -> CampaignState:
         fallback = fallback_agent_output(
             "Identity Attack Agent",
@@ -410,6 +467,8 @@ that blockchain testing is not applicable for this campaign and list only monito
             "target": state.get("target"),
             "agents": state.get("agents", []),
             "services": state.get("services", []),
+            "capability_selection": state.get("capability_selection", {}),
+            "capability_validation": state.get("capability_validation", {}),
         }
         safety_review = safety_review_tool(json.dumps(draft, indent=2))
         prompt = f"""
@@ -466,6 +525,7 @@ Write the final campaign brief with:
     graph.add_node("gather_context", gather_context)
     graph.add_node("campaign_orchestrator", campaign_orchestrator)
     graph.add_node("reconnaissance_agent", reconnaissance_agent)
+    graph.add_node("capability_validation_agent", capability_validation_agent)
     graph.add_node("identity_attack_agent", identity_attack_agent)
     graph.add_node("web_api_attack_agent", web_api_attack_agent)
     graph.add_node("blockchain_security_agent", blockchain_security_agent)
@@ -474,7 +534,8 @@ Write the final campaign brief with:
     graph.set_entry_point("gather_context")
     graph.add_edge("gather_context", "campaign_orchestrator")
     graph.add_edge("campaign_orchestrator", "reconnaissance_agent")
-    graph.add_edge("reconnaissance_agent", "identity_attack_agent")
+    graph.add_edge("reconnaissance_agent", "capability_validation_agent")
+    graph.add_edge("capability_validation_agent", "identity_attack_agent")
     graph.add_edge("identity_attack_agent", "web_api_attack_agent")
     graph.add_edge("web_api_attack_agent", "blockchain_security_agent")
     graph.add_edge("blockchain_security_agent", "reporting_agent")
@@ -513,6 +574,7 @@ def deterministic_campaign_report(state: CampaignState, safety_review: str) -> s
             "## Limitations",
             "- Tool families such as BloodHound, Burp Suite, ZAP, Slither, Mythril, and Hardhat are represented as role-level integrations until their local adapters are implemented.",
             "- Active probing only runs when an allowlisted target is supplied with execute_recon enabled.",
+            "- Capability validation only runs when execute_validation is enabled and open services are observed.",
         ]
     )
     return "\n".join(lines)
@@ -524,6 +586,9 @@ def run_campaign(
     ports: list[int] | None = None,
     provider: str = "llama",
     execute_recon: bool = False,
+    execute_validation: bool = False,
+    max_capabilities: int = 5,
+    execution_mode: str = "safe",
     use_llm: bool = True,
     n_results: int = 5,
 ) -> CampaignRun:
@@ -535,7 +600,10 @@ def run_campaign(
         "goal": goal,
         "target": target,
         "provider": provider,
-        "execute_recon": execute_recon,
+        "execute_recon": execute_recon or execute_validation,
+        "execute_validation": execute_validation,
+        "max_capabilities": max_capabilities,
+        "execution_mode": execution_mode,
         "use_llm": use_llm,
         "ports": ports or (default_ports_for_target(target) if target else []),
         "steps": [],
@@ -559,6 +627,8 @@ def run_campaign(
             tcp=final_state.get("tcp"),
             services=final_state.get("services", []),
             http=final_state.get("http"),
+            capability_selection=final_state.get("capability_selection"),
+            capability_validation=final_state.get("capability_validation"),
             safety_review=final_state.get("safety_review", ""),
             elapsed_seconds=elapsed,
         )
@@ -597,6 +667,9 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         f"- Target: {payload.get('target') or 'tabletop / no live target'}",
         f"- Provider: {payload.get('provider')}",
         f"- Elapsed seconds: {payload.get('elapsed_seconds'):.2f}",
+        "",
+        "## Capability Validation",
+        json.dumps(payload.get("capability_validation") or {"status": "not run"}, indent=2),
         "",
         "## Steps",
         *[f"- {step}" for step in payload.get("steps", [])],

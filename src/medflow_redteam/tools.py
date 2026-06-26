@@ -7,9 +7,11 @@ import shutil
 import socket
 import subprocess
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from ftplib import FTP
 from html.parser import HTMLParser
+from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
@@ -96,8 +98,8 @@ def run_local_command(command: list[str], timeout: int = 120) -> ToolResult:
             tool=command[0],
             command=command,
             returncode=124,
-            stdout=stdout.strip(),
-            stderr=(stderr.strip() + f"\nTimed out after {timeout} seconds").strip(),
+            stdout=strip_ansi(stdout.strip()),
+            stderr=strip_ansi((stderr.strip() + f"\nTimed out after {timeout} seconds").strip()),
             elapsed_seconds=elapsed,
         )
     elapsed = time.perf_counter() - started
@@ -105,21 +107,34 @@ def run_local_command(command: list[str], timeout: int = 120) -> ToolResult:
         tool=command[0],
         command=command,
         returncode=proc.returncode,
-        stdout=proc.stdout.strip(),
-        stderr=proc.stderr.strip(),
+        stdout=strip_ansi(proc.stdout.strip()),
+        stderr=strip_ansi(proc.stderr.strip()),
         elapsed_seconds=elapsed,
     )
 
 
+def strip_ansi(value: str) -> str:
+    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", value)
+
+
 def tcp_connect_check(target: str, ports: list[int] | None = None, timeout: float = 1.0) -> dict:
     target = validate_target(target)
-    results = {}
-    for port in ports or default_ports_for_target(target):
+    selected_ports = ports or default_ports_for_target(target)
+
+    def check_one(port: int) -> tuple[str, dict[str, Any]]:
         started = time.perf_counter()
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(timeout)
             code = sock.connect_ex((target, port))
-        results[str(port)] = {"open": code == 0, "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
+        return str(port), {"open": code == 0, "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
+
+    results = {}
+    workers = min(128, max(1, len(selected_ports)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [pool.submit(check_one, port) for port in selected_ports]
+        for future in as_completed(futures):
+            port, result = future.result()
+            results[port] = result
     return results
 
 
@@ -300,10 +315,14 @@ def can_execute_aggressive(capability: dict, execution_mode: str) -> bool:
         "credentials",
         "dump",
         "hash",
+        "hashdump",
         "login",
-        "pass",
         "passwd",
         "password",
+        "persistence",
+        "priv",
+        "privesc",
+        "example",
         "relay",
         "dos",
     }
@@ -311,14 +330,14 @@ def can_execute_aggressive(capability: dict, execution_mode: str) -> bool:
         module_path = capability.get("module_path") or ""
         module_type = capability.get("module_type") or ""
         lowered = f"{module_path} {capability.get('name', '')}".lower()
-        if any(term in lowered for term in blocked_terms):
+        if has_blocked_token(lowered, blocked_terms):
             return False
         return module_type in {"auxiliary", "exploit"} and allowed_tool_identifier(module_path)
     if runner == "nuclei_template":
         tags = {item.lower() for item in capability.get("tags", [])}
         template_path = capability.get("template_path") or ""
         lowered = f"{template_path} {capability.get('name', '')} {' '.join(tags)}".lower()
-        if any(term in lowered for term in blocked_terms):
+        if has_blocked_token(lowered, blocked_terms):
             return False
         return allowed_tool_identifier(template_path.replace("/", "_").replace(".", "_"))
     if runner != "nmap_nse_script":
@@ -334,6 +353,11 @@ def can_execute_aggressive(capability: dict, execution_mode: str) -> bool:
 
 def allowed_tool_identifier(value: str) -> bool:
     return bool(value) and bool(re.fullmatch(r"[A-Za-z0-9_./:-]+", value)) and ".." not in value
+
+
+def has_blocked_token(text: str, blocked_terms: set[str]) -> bool:
+    tokens = set(re.split(r"[^a-z0-9]+", text.lower()))
+    return bool(tokens & blocked_terms)
 
 
 def selected_port(capability: dict) -> int | None:

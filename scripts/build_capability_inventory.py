@@ -76,6 +76,11 @@ def ports_from_text(text: str) -> list[str]:
     return sorted(ports)
 
 
+def has_blocked_token(text: str, blocked_terms: set[str]) -> bool:
+    tokens = set(re.split(r"[^a-z0-9]+", text.lower()))
+    return bool(tokens & blocked_terms)
+
+
 def metasploit_capabilities(repo: Path, limit: int | None = None) -> list[dict[str, Any]]:
     modules_dir = repo / "modules"
     capabilities = []
@@ -105,10 +110,14 @@ def metasploit_capabilities(repo: Path, limit: int | None = None) -> list[dict[s
             "credentials",
             "dump",
             "hash",
+            "hashdump",
             "login",
-            "pass",
             "passwd",
             "password",
+            "persistence",
+            "priv",
+            "privesc",
+            "example",
             "relay",
             "dos",
         }
@@ -116,7 +125,7 @@ def metasploit_capabilities(repo: Path, limit: int | None = None) -> list[dict[s
         safe_to_execute = (
             module_type == "auxiliary"
             and any(word in lowered_path for word in ["scanner", "version", "enum"])
-            and not any(term in lowered_path for term in unsafe_terms)
+            and not has_blocked_token(lowered_path, unsafe_terms)
         )
         if not ports and service in DEFAULT_PORTS_BY_SERVICE:
             ports = DEFAULT_PORTS_BY_SERVICE[service]
@@ -186,10 +195,14 @@ def nuclei_capabilities(repo: Path, limit: int | None = None) -> list[dict[str, 
             "credentials",
             "dump",
             "hash",
+            "hashdump",
             "login",
-            "pass",
             "passwd",
             "password",
+            "persistence",
+            "priv",
+            "privesc",
+            "example",
             "relay",
             "dos",
         }
@@ -201,7 +214,7 @@ def nuclei_capabilities(repo: Path, limit: int | None = None) -> list[dict[str, 
                 "provider": "nuclei",
                 "runner": "nuclei_template",
                 "execution": "external_tool_optional",
-                "safe_to_execute": severity.lower() not in {"critical"} and not any(term in lowered for term in unsafe_terms),
+                "safe_to_execute": severity.lower() not in {"critical"} and not has_blocked_token(lowered, unsafe_terms),
                 "template_path": rel.as_posix(),
                 "risk": f"nuclei template severity={severity or 'unknown'}",
                 "cves": cves,

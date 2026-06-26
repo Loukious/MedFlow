@@ -1,8 +1,8 @@
 {
   "safety": {
     "default_target": "172.29.10.10",
-    "allowed_targets": ["localhost", "127.0.0.1"],
-    "allowed_cidrs": ["127.0.0.0/8", "172.29.10.0/24"]
+    "allowed_targets": ["localhost", "127.0.0.1", "10.129.32.115"],
+    "allowed_cidrs": ["127.0.0.0/8", "172.29.10.0/24", "10.129.0.0/16"]
   },
   "scan": {
     "container_ports": [21, 22, 80, 443, 139, 445, 3306, 6667, 8180],

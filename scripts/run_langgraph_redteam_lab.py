@@ -16,7 +16,24 @@ from medflow_redteam.langgraph_lab import LabRun, run_redteam_lab, save_lab_run
 def parse_ports(value: str | None) -> list[int] | None:
     if not value:
         return None
-    return [int(item.strip()) for item in value.split(",") if item.strip()]
+    ports: set[int] = set()
+    for raw_item in value.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        if "-" in item:
+            start_text, end_text = item.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if start > end:
+                raise ValueError(f"Invalid port range: {item}")
+            ports.update(range(start, end + 1))
+        else:
+            ports.add(int(item))
+    invalid = [port for port in ports if port < 1 or port > 65535]
+    if invalid:
+        raise ValueError(f"Invalid TCP port(s): {invalid[:5]}")
+    return sorted(ports)
 
 
 def source_label(hit: dict) -> str:

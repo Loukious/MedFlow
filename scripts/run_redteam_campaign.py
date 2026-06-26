@@ -15,7 +15,24 @@ from medflow_redteam.campaign import CampaignRun, run_campaign, save_campaign_ru
 def parse_ports(value: str | None) -> list[int] | None:
     if not value:
         return None
-    return [int(item.strip()) for item in value.split(",") if item.strip()]
+    ports: set[int] = set()
+    for raw_item in value.split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        if "-" in item:
+            start_text, end_text = item.split("-", 1)
+            start = int(start_text)
+            end = int(end_text)
+            if start > end:
+                raise ValueError(f"Invalid port range: {item}")
+            ports.update(range(start, end + 1))
+        else:
+            ports.add(int(item))
+    invalid = [port for port in ports if port < 1 or port > 65535]
+    if invalid:
+        raise ValueError(f"Invalid TCP port(s): {invalid[:5]}")
+    return sorted(ports)
 
 
 def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_traces: bool) -> None:
@@ -33,6 +50,7 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
         [
             f"Agents completed: {len(run.agents)}",
             f"Services observed: {len(run.services)}",
+            f"Capability validation: {validation_label(run)}",
             f"Retrieved sources: {len(run.sources)}",
             f"Safety review: {run.safety_review[:180] if run.safety_review else 'not run'}",
         ]
@@ -54,6 +72,16 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
             services.add_row(service.get("port", ""), service.get("service", ""), service.get("version", ""))
         console.print(services)
 
+    if run.capability_validation and run.capability_validation.get("results"):
+        validation_table = Table("Capability", "Status", "Evidence")
+        for item in run.capability_validation["results"]:
+            validation_table.add_row(
+                item.get("selected_exploit_id", ""),
+                "verified" if item.get("verified") else "not verified",
+                (item.get("proof_output") or item.get("reason") or "")[:260],
+            )
+        console.print(validation_table)
+
     if show_traces:
         traces = Table("Tool/Agent", "Input", "Output Preview")
         for trace in run.tool_traces:
@@ -64,12 +92,27 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
         console.print(Panel(run.report.strip() or "(empty report)", title="Campaign Report"))
 
 
+def validation_label(run: CampaignRun) -> str:
+    validation = run.capability_validation or {}
+    if not validation:
+        return "not requested"
+    return f"{validation.get('successful', 0)}/{validation.get('attempted', 0)} verified"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the MedFlow multi-agent red-team campaign planner.")
     parser.add_argument("goal", help="High-level campaign goal, for example: validate hospital portal identity attack paths.")
     parser.add_argument("--target", default=None, help="Optional allowlisted target for active reconnaissance.")
     parser.add_argument("--ports", default=None, help="Comma-separated ports for active reconnaissance.")
     parser.add_argument("--execute-recon", action="store_true", help="Let the Reconnaissance Agent run active allowlisted probes.")
+    parser.add_argument("--execute-validation", action="store_true", help="Select and run matching capability validation tools after recon.")
+    parser.add_argument("--max-capabilities", type=int, default=5, help="Maximum matching validation capabilities to execute.")
+    parser.add_argument(
+        "--execution-mode",
+        choices=["safe", "aggressive_lab"],
+        default="safe",
+        help="Execution policy for selected validation capabilities.",
+    )
     parser.add_argument("--no-llm", action="store_true", help="Use deterministic role handoffs for a fast offline demo.")
     parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
     parser.add_argument("--results", type=int, default=5, help="Retrieved context results per query.")
@@ -85,6 +128,9 @@ def main() -> None:
         ports=parse_ports(args.ports),
         provider=args.provider,
         execute_recon=args.execute_recon,
+        execute_validation=args.execute_validation,
+        max_capabilities=args.max_capabilities,
+        execution_mode=args.execution_mode,
         use_llm=not args.no_llm,
         n_results=args.results,
     )

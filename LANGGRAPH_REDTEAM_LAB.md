@@ -241,6 +241,18 @@ Run a fast deterministic campaign demo without LLM calls:
 python scripts/run_redteam_campaign.py "Validate identity and web attack paths against the hospital employee portal" --target 172.29.10.10 --execute-recon --no-llm
 ```
 
+Run the campaign planner with active recon and capability validation against an allowlisted HTB-style lab target:
+
+```bash
+python scripts/run_redteam_campaign.py "Validate identity and web attack paths against the HTB target" --target 10.129.32.115 --ports 1-1000 --execute-validation --max-capabilities 8 --execution-mode aggressive_lab --no-llm
+```
+
+For direct tool validation without the multi-agent campaign layer, use the lab runner:
+
+```bash
+python scripts/run_langgraph_redteam_lab.py --target 10.129.32.115 --ports 1-1000 --skip-safe-scripts --exploit-validation --max-exploits 8 --execution-mode aggressive_lab
+```
+
 For a cleaner demo output, omit `--sources --traces`:
 
 ```bash

@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from medflow_graph.memory import GraphStore
-from medflow_redteam.campaign import observation_status
+from medflow_redteam.campaign import http_ports_from_services, observation_status
 from medflow_redteam.capabilities import capability_match_score
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.tools import normalize_validation_status, web_control_checks
@@ -93,6 +93,18 @@ class RedTeamCoreTests(unittest.TestCase):
             observation_status({"http_probe": [{"url": "http://lab/", "status": 200}, {"url": "http://lab/admin", "error": "404"}]}, "http_probe"),
             "partial_success",
         )
+
+    def test_http_ports_only_from_http_like_services(self) -> None:
+        self.assertEqual(
+            http_ports_from_services(
+                [
+                    {"port": "21", "service": "ftp", "version": "ProFTPD"},
+                    {"port": "6667", "service": "irc", "version": "UnrealIRCd"},
+                ]
+            ),
+            [],
+        )
+        self.assertEqual(http_ports_from_services([{"port": "8180", "service": "http", "version": "Jetty"}]), [8180])
 
 
 if __name__ == "__main__":

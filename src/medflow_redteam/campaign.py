@@ -498,19 +498,32 @@ and success criteria. Do not provide exploit instructions.
             if not services and open_ports:
                 services = infer_services_from_ports(open_ports)
             http_ports = http_ports_from_services(services)
-            http = http_probe(target, ports=http_ports or None)
-            fingerprints = web_fingerprint(target, ports=http_ports or None)
-            web_routes = web_route_discovery(target, ports=http_ports or None)
+            if http_ports:
+                http = http_probe(target, ports=http_ports)
+                fingerprints = web_fingerprint(target, ports=http_ports)
+                web_routes = web_route_discovery(target, ports=http_ports)
+                http_status = observation_status(http, "http_probe")
+                fingerprint_status = observation_status(fingerprints, "web_fingerprints")
+                route_status = observation_status(web_routes, "web_routes")
+            else:
+                skip_reason = "No HTTP-like open services were observed; skipped web probing."
+                http = {"http_probe": [], "skipped": True, "reason": skip_reason}
+                fingerprints = {"web_fingerprints": [], "skipped": True, "reason": skip_reason}
+                web_routes = {"web_routes": [], "skipped": True, "reason": skip_reason}
+                http_status = "not_applicable"
+                fingerprint_status = "not_applicable"
+                route_status = "not_applicable"
             web_checks = web_control_checks(web_routes, fingerprints)
-            steps = [*steps, "reconnaissance agent executed TCP, Nmap, and HTTP probes against the allowlisted target"]
+            recon_step = "reconnaissance agent executed TCP, Nmap, and HTTP probes against the allowlisted target" if http_ports else "reconnaissance agent executed TCP and Nmap probes; skipped web probing because no HTTP-like services were observed"
+            steps = [*steps, recon_step]
             timeline = state.get("tool_timeline", [])
             timeline = [
                 *timeline,
                 {"tool": "tcp_connect_check", "input": target, "status": "success", "evidence": f"{len(open_ports)} open TCP port(s)"},
                 {"tool": "nmap_service_scan", "input": " ".join(nmap_result.command or []), "status": "success" if nmap_result.returncode == 0 else "tool_error", "evidence": summarize_tool_result(nmap_result, max_chars=1200)},
-                {"tool": "http_probe", "input": target, "status": observation_status(http, "http_probe"), "evidence": json.dumps(http, indent=2)[:1200]},
-                {"tool": "web_fingerprint", "input": target, "status": observation_status(fingerprints, "web_fingerprints"), "evidence": json.dumps(fingerprints, indent=2)[:1200]},
-                {"tool": "web_route_discovery", "input": target, "status": observation_status(web_routes, "web_routes"), "evidence": json.dumps(web_routes, indent=2)[:1200]},
+                {"tool": "http_probe", "input": target, "status": http_status, "evidence": json.dumps(http, indent=2)[:1200]},
+                {"tool": "web_fingerprint", "input": target, "status": fingerprint_status, "evidence": json.dumps(fingerprints, indent=2)[:1200]},
+                {"tool": "web_route_discovery", "input": target, "status": route_status, "evidence": json.dumps(web_routes, indent=2)[:1200]},
                 {"tool": "web_control_checks", "input": target, "status": findings_status(web_checks), "evidence": json.dumps(web_checks, indent=2)[:1200]},
             ]
             traces = [

@@ -187,6 +187,84 @@ class GraphStore:
             **{f"nodes_{key.lower()}": value for key, value in sorted(by_type.items())},
         }
 
+    def search(self, query: str, limit: int = 10, node_types: set[str] | None = None) -> list[dict[str, Any]]:
+        """Search nodes directly without an LLM or vector database."""
+        normalized_query = normalize_text(query)
+        query_tokens = token_set(normalized_query)
+        hits: list[dict[str, Any]] = []
+        for node in self.nodes.values():
+            if node.status != "active":
+                continue
+            if node_types and node.type not in node_types:
+                continue
+            searchable = " ".join(
+                [
+                    node.type,
+                    node.canonical_name,
+                    " ".join(node.aliases),
+                    stable_json(node.attributes),
+                    node.context,
+                ]
+            )
+            searchable_tokens = token_set(searchable)
+            token_score = 0.0
+            if query_tokens and searchable_tokens:
+                token_score = len(query_tokens & searchable_tokens) / len(query_tokens)
+            fuzzy_score = text_similarity(normalized_query, normalize_text(node.canonical_name))
+            context_score = jaccard_similarity(normalized_query, searchable)
+            score = round((token_score * 0.55) + (context_score * 0.30) + (fuzzy_score * 0.15), 3)
+            if score <= 0:
+                continue
+            hits.append(
+                {
+                    "id": node.id,
+                    "type": node.type,
+                    "name": node.canonical_name,
+                    "score": score,
+                    "attributes": node.attributes,
+                    "context": node.context[:1200],
+                    "source_ids": node.source_ids,
+                }
+            )
+        return sorted(hits, key=lambda item: item["score"], reverse=True)[:limit]
+
+    def campaign_memory(self, target: str | None, services: list[dict[str, str]], limit: int = 10) -> dict[str, Any]:
+        """Return compact prior graph evidence useful for a campaign run."""
+        queries = []
+        if target:
+            queries.append(str(target))
+        for service in services[:8]:
+            queries.append(
+                " ".join(
+                    str(service.get(key, ""))
+                    for key in ["port", "protocol", "service", "version"]
+                    if service.get(key)
+                )
+            )
+        hits_by_id: dict[str, dict[str, Any]] = {}
+        for query in queries:
+            for hit in self.search(query, limit=limit):
+                existing = hits_by_id.get(hit["id"])
+                if existing is None or hit["score"] > existing["score"]:
+                    hit["source_query"] = query
+                    hits_by_id[hit["id"]] = hit
+        hits = sorted(hits_by_id.values(), key=lambda item: item["score"], reverse=True)[:limit]
+        successful_capabilities = [
+            hit for hit in hits
+            if hit["type"] == "Capability" and hit["attributes"].get("verified") is True
+        ]
+        failed_capabilities = [
+            hit for hit in hits
+            if hit["type"] == "Capability" and hit["attributes"].get("verified") is False
+        ]
+        return {
+            "graph_path": str(self.path),
+            "hits": hits,
+            "successful_capabilities": successful_capabilities[:5],
+            "failed_capabilities": failed_capabilities[:5],
+            "summary": self.summary(),
+        }
+
     def upsert_node(
         self,
         node_type: str,
@@ -547,6 +625,32 @@ def ingest_campaign_report(store: GraphStore, report_path: Path | str) -> dict[s
             store.add_edge(route_node.id, artifact.id, "EXPOSES_ARTIFACT", source_id=source_id)
             store.add_edge(artifact.id, finding.id, "SUPPORTS_FINDING", source_id=source_id)
             stats["edges"] += 2
+
+    for fingerprint in ((payload.get("web_fingerprint") or {}).get("web_fingerprints") or []):
+        url = str(fingerprint.get("url") or "")
+        if not url or fingerprint.get("error"):
+            continue
+        fp_node = track(
+            store.upsert_node(
+                "WebFingerprint",
+                url,
+                attributes={
+                    "url": normalize_url(url),
+                    "server": fingerprint.get("server"),
+                    "powered_by": fingerprint.get("powered_by"),
+                    "technology_signals": fingerprint.get("technology_signals") or [],
+                    "security_headers": fingerprint.get("security_headers") or {},
+                },
+                context=f"Web fingerprint {url} server={fingerprint.get('server')} tech={fingerprint.get('technology_signals')}",
+                source_id=source_id,
+                stable_key=normalize_url(url),
+            )
+        )
+        store.add_edge(campaign.id, fp_node.id, "OBSERVED_WEB_FINGERPRINT", source_id=source_id)
+        stats["edges"] += 1
+        if target_node:
+            store.add_edge(target_node.id, fp_node.id, "HAS_WEB_FINGERPRINT", source_id=source_id)
+            stats["edges"] += 1
 
     validation = payload.get("capability_validation") or {}
     for result in validation.get("results") or []:

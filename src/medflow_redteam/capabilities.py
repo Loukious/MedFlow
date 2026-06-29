@@ -89,7 +89,12 @@ def has_blocked_provider_indicator(capability: dict[str, Any]) -> bool:
     return bool(tokens & blocked)
 
 
-def capability_match_score(capability: dict[str, Any], service: dict[str, str]) -> tuple[int, list[str]]:
+def capability_match_score(
+    capability: dict[str, Any],
+    service: dict[str, str],
+    web_routes: dict[str, Any] | None = None,
+    graph_memory: dict[str, Any] | None = None,
+) -> tuple[int, list[str]]:
     if has_blocked_provider_indicator(capability):
         return 0, []
 
@@ -157,6 +162,70 @@ def capability_match_score(capability: dict[str, Any], service: dict[str, str]) 
         score += 10
         reasons.append("CVE-linked capability")
 
+    route_score, route_reasons = web_route_score(capability, service, web_routes)
+    score += route_score
+    reasons.extend(route_reasons)
+
+    memory_score, memory_reasons = graph_memory_score(capability, graph_memory)
+    score += memory_score
+    reasons.extend(memory_reasons)
+
+    return score, reasons
+
+
+def web_route_score(capability: dict[str, Any], service: dict[str, str], web_routes: dict[str, Any] | None) -> tuple[int, list[str]]:
+    if not web_routes:
+        return 0, []
+    runner = capability.get("runner")
+    capability_text = " ".join(
+        str(capability.get(key, ""))
+        for key in ["id", "name", "description", "template_path", "module_path"]
+    ).lower()
+    routes = web_routes.get("web_routes") or []
+    score = 0
+    reasons: list[str] = []
+    service_text = str((capability.get("match") or {}).get("service", "")).lower()
+    observed_service = normalize_text(service.get("service"))
+    observed_port = normalize_text(service.get("port"))
+    observed_is_web = observed_service in {"http", "https", "http-proxy"} or observed_port in {"80", "443", "5000", "8000", "8080", "8443"}
+    is_web_relevant = observed_is_web and any(term in f"{capability_text} {service_text}" for term in ["http", "web", "api", "cookie", "header", "file", "download"])
+    if any(route.get("artifact_signal") for route in routes):
+        if is_web_relevant:
+            score += 18
+            reasons.append("web artifact signal observed")
+    if any(str(route.get("status")) == "200" and route.get("url", "").lower().rstrip("/").endswith("/login") for route in routes):
+        if any(term in capability_text for term in ["auth", "login", "session", "cookie", "http"]):
+            score += 12
+            reasons.append("login route observed")
+    if any("application/json" in str(route.get("content_type", "")).lower() for route in routes):
+        if any(term in capability_text for term in ["api", "json", "http"]):
+            score += 10
+            reasons.append("API-like response observed")
+    return score, reasons
+
+
+def graph_memory_score(capability: dict[str, Any], graph_memory: dict[str, Any] | None) -> tuple[int, list[str]]:
+    if not graph_memory:
+        return 0, []
+    cap_id = str(capability.get("id") or "")
+    if not cap_id:
+        return 0, []
+    score = 0
+    reasons: list[str] = []
+    successful = {
+        str(hit.get("attributes", {}).get("capability_id") or hit.get("name"))
+        for hit in graph_memory.get("successful_capabilities", [])
+    }
+    failed = {
+        str(hit.get("attributes", {}).get("capability_id") or hit.get("name"))
+        for hit in graph_memory.get("failed_capabilities", [])
+    }
+    if cap_id in successful:
+        score += 20
+        reasons.append("graph memory shows previous positive validation")
+    if cap_id in failed:
+        score -= 8
+        reasons.append("graph memory shows previous non-finding; deprioritized but not blocked")
     return score, reasons
 
 
@@ -165,12 +234,14 @@ def select_capabilities_for_services(
     services: list[dict[str, str]],
     limit: int = 1,
     inventory_path: Path | None = None,
+    web_routes: dict[str, Any] | None = None,
+    graph_memory: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     capabilities = load_capability_inventory(inventory_path)
     matches: list[CapabilityMatch] = []
     for capability in capabilities:
         for service in services:
-            score, reasons = capability_match_score(capability, service)
+            score, reasons = capability_match_score(capability, service, web_routes=web_routes, graph_memory=graph_memory)
             if score:
                 matches.append(CapabilityMatch(capability, score, reasons, service))
 
@@ -188,6 +259,7 @@ def select_capabilities_for_services(
             "score": item.score,
             "matched_service": item.matched_service,
             "reasons": item.reasons,
+            "score_explanation": "; ".join(item.reasons),
         }
         for item in deduped_matches
     ]
@@ -200,9 +272,11 @@ def select_capabilities_for_services(
         "selected_candidates": selected_candidates,
         "selected": selected_candidates[0] if selected_candidates else None,
         "decision": "selected" if selected_candidates else "no_matching_capability",
-        "reason": "Selected highest-scoring candidates from observed services."
+        "reason": "Selected highest-scoring candidates from observed services, web evidence, and graph memory."
         if selected_candidates
         else "No capability matched the observed services.",
+        "graph_memory_used": bool(graph_memory),
+        "web_routes_used": bool(web_routes),
     }
 
 

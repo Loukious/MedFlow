@@ -249,6 +249,18 @@ python scripts/run_redteam_campaign.py "Assess an unknown authorized lab target 
 
 Keep the goal generic for unknown targets. The campaign logic should learn from observed ports, service fingerprints, web routes, artifacts, and tool outputs rather than from a machine name or challenge hint.
 
+Campaign runs also emit explicit `phases`, a `tool_timeline`, normalized capability `status` values, web fingerprint evidence, and optional graph-memory hits. To let the campaign use prior local memory during capability selection, keep the default graph path or pass it explicitly:
+
+```bash
+python scripts/run_redteam_campaign.py "Assess an unknown authorized lab target and identify viable validation paths" --target 10.129.32.115 --ports 1-1000 --execute-validation --max-capabilities 8 --execution-mode aggressive_lab --no-llm --graph-memory data/graph/medflow_graph.json
+```
+
+Search graph memory directly without an LLM:
+
+```bash
+python scripts/query_graph_memory.py "packet capture exposure web route" --limit 8
+```
+
 For direct tool validation without the multi-agent campaign layer, use the lab runner:
 
 ```bash

@@ -17,6 +17,7 @@ from medflow_compare.shared_tools import (
 )
 from medflow_ti.config import Settings, load_settings
 from medflow_ti.llm import LLMError, is_llm_api_error
+from medflow_graph.memory import GraphStore
 
 from .tools import (
     ToolResult,
@@ -29,6 +30,7 @@ from .tools import (
     summarize_tool_result,
     tcp_connect_check,
     validate_target,
+    web_fingerprint,
     web_route_discovery,
 )
 
@@ -57,9 +59,13 @@ class CampaignRun:
     tcp: dict[str, Any] | None = None
     services: list[dict[str, str]] = field(default_factory=list)
     http: dict[str, Any] | None = None
+    web_fingerprint: dict[str, Any] | None = None
     web_routes: dict[str, Any] | None = None
     capability_selection: dict[str, Any] | None = None
     capability_validation: dict[str, Any] | None = None
+    graph_memory: dict[str, Any] | None = None
+    phases: list[dict[str, Any]] = field(default_factory=list)
+    tool_timeline: list[dict[str, Any]] = field(default_factory=list)
     safety_review: str = ""
     elapsed_seconds: float = 0.0
     error: str | None = None
@@ -79,9 +85,13 @@ class CampaignState(TypedDict, total=False):
     nmap_result: ToolResult
     services: list[dict[str, str]]
     http: dict[str, Any]
+    web_fingerprint: dict[str, Any]
     web_routes: dict[str, Any]
     capability_selection: dict[str, Any]
     capability_validation: dict[str, Any]
+    graph_memory: dict[str, Any]
+    phases: list[dict[str, Any]]
+    tool_timeline: list[dict[str, Any]]
     sources: list[dict[str, Any]]
     agents: list[dict[str, Any]]
     report: str
@@ -92,6 +102,29 @@ class CampaignState(TypedDict, total=False):
 
 def append_step(state: CampaignState, step: str) -> list[str]:
     return [*state.get("steps", []), step]
+
+
+def append_phase(state: CampaignState, phase: str, status: str, evidence: str = "") -> list[dict[str, Any]]:
+    return [
+        *state.get("phases", []),
+        {
+            "phase": phase,
+            "status": status,
+            "evidence": evidence,
+        },
+    ]
+
+
+def append_timeline(state: CampaignState, name: str, input_text: str, status: str, evidence: str = "") -> list[dict[str, Any]]:
+    return [
+        *state.get("tool_timeline", []),
+        {
+            "tool": name,
+            "input": input_text[:500],
+            "status": status,
+            "evidence": evidence[:1200],
+        },
+    ]
 
 
 def agent_to_dict(output: AgentOutput) -> dict[str, Any]:
@@ -267,16 +300,23 @@ def scalarize(value: Any, fallback: Any = "") -> str:
     return str(value)
 
 
-def build_campaign_graph(settings: Settings, provider: str = "llama", n_results: int = 5):
+def build_campaign_graph(
+    settings: Settings,
+    provider: str = "llama",
+    n_results: int = 5,
+    graph_memory_path: Path | None = None,
+):
     def gather_context(state: CampaignState) -> CampaignState:
         sources = retrieve_many(build_campaign_queries(state["goal"]), settings=settings, n_results=n_results)
         return {
             "sources": sources,
             "steps": append_step(state, "campaign orchestrator retrieved ATT&CK and red-team context"),
+            "phases": append_phase(state, "scope validation", "success", "Safety boundary and campaign scope initialized."),
             "tool_traces": [
                 *state.get("tool_traces", []),
                 make_trace("retrieve_many", state["goal"], json.dumps(sources[:6], indent=2)),
             ],
+            "tool_timeline": append_timeline(state, "retrieve_many", state["goal"], "success", f"Retrieved {len(sources)} context item(s)."),
         }
 
     def campaign_orchestrator(state: CampaignState) -> CampaignState:
@@ -317,6 +357,7 @@ and success criteria. Do not provide exploit instructions.
         services = state.get("services", [])
         http = state.get("http")
         web_routes = state.get("web_routes")
+        fingerprints = state.get("web_fingerprint")
         traces = state.get("tool_traces", [])
         steps = state.get("steps", [])
         if state.get("execute_recon") and state.get("target"):
@@ -330,18 +371,56 @@ and success criteria. Do not provide exploit instructions.
                 services = infer_services_from_ports(open_ports)
             http_ports = http_ports_from_services(services)
             http = http_probe(target, ports=http_ports or None)
+            fingerprints = web_fingerprint(target, ports=http_ports or None)
             web_routes = web_route_discovery(target, ports=http_ports or None)
             steps = [*steps, "reconnaissance agent executed TCP, Nmap, and HTTP probes against the allowlisted target"]
+            timeline = state.get("tool_timeline", [])
+            timeline = [
+                *timeline,
+                {"tool": "tcp_connect_check", "input": target, "status": "success", "evidence": f"{len(open_ports)} open TCP port(s)"},
+                {"tool": "nmap_service_scan", "input": " ".join(nmap_result.command or []), "status": "success" if nmap_result.returncode == 0 else "tool_error", "evidence": summarize_tool_result(nmap_result, max_chars=1200)},
+                {"tool": "http_probe", "input": target, "status": "success", "evidence": json.dumps(http, indent=2)[:1200]},
+                {"tool": "web_fingerprint", "input": target, "status": "success", "evidence": json.dumps(fingerprints, indent=2)[:1200]},
+                {"tool": "web_route_discovery", "input": target, "status": "success", "evidence": json.dumps(web_routes, indent=2)[:1200]},
+            ]
             traces = [
                 *traces,
                 make_trace("tcp_connect_check", target, json.dumps(tcp, indent=2)),
                 make_trace("nmap_service_scan", " ".join(nmap_result.command or []), summarize_tool_result(nmap_result)),
                 make_trace("http_probe", target, json.dumps(http, indent=2)),
+                make_trace("web_fingerprint", target, json.dumps(fingerprints, indent=2)),
                 make_trace("web_route_discovery", target, json.dumps(web_routes, indent=2)),
             ]
             sources = retrieve_many(build_campaign_queries(state["goal"], services), settings=settings, n_results=n_results)
         else:
             sources = state.get("sources", [])
+            timeline = state.get("tool_timeline", [])
+
+        graph_memory = state.get("graph_memory", {})
+        if services:
+            try:
+                store = GraphStore.load(graph_memory_path or Path("data/graph/medflow_graph.json"))
+                graph_memory = store.campaign_memory(state.get("target"), services, limit=10)
+                timeline = [
+                    *timeline,
+                    {
+                        "tool": "graph_memory_search",
+                        "input": str(state.get("target") or state["goal"]),
+                        "status": "success",
+                        "evidence": f"{len(graph_memory.get('hits', []))} prior graph item(s) matched.",
+                    },
+                ]
+            except Exception as exc:
+                graph_memory = {"error": repr(exc), "hits": []}
+                timeline = [
+                    *timeline,
+                    {
+                        "tool": "graph_memory_search",
+                        "input": str(state.get("target") or state["goal"]),
+                        "status": "tool_error",
+                        "evidence": repr(exc),
+                    },
+                ]
 
         fallback = fallback_agent_output(
             "Reconnaissance Agent",
@@ -365,30 +444,51 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
 """,
             fallback,
         )
-        output["evidence"] = {"services": services, "http": http or {}, "web_routes": web_routes or {}, "tcp": tcp or {}}
+        output["evidence"] = {
+            "services": services,
+            "http": http or {},
+            "web_fingerprint": fingerprints or {},
+            "web_routes": web_routes or {},
+            "tcp": tcp or {},
+        }
         return {
             "tcp": tcp,
             "services": services,
             "http": http,
+            "web_fingerprint": fingerprints,
             "web_routes": web_routes,
+            "graph_memory": graph_memory,
             "sources": sources,
             "agents": [*state.get("agents", []), output],
             "steps": [*steps, "reconnaissance agent produced infrastructure handoff"],
+            "phases": append_phase({**state, "phases": state.get("phases", [])}, "reconnaissance", "success" if services else "ran_no_finding", f"Observed {len(services)} service(s)."),
             "tool_traces": [*traces, make_trace("reconnaissance_agent", state["goal"], json.dumps(output, indent=2))],
+            "tool_timeline": [*timeline, {"tool": "reconnaissance_agent", "input": state["goal"], "status": "success", "evidence": output.get("handoff", "")}],
         }
 
     def capability_validation_agent(state: CampaignState) -> CampaignState:
         if not state.get("execute_validation", False):
-            return {"steps": append_step(state, "skipped capability validation execution")}
+            return {
+                "steps": append_step(state, "skipped capability validation execution"),
+                "phases": append_phase(state, "validation execution", "not_applicable", "Capability validation was not requested."),
+            }
         if not state.get("target"):
-            return {"steps": append_step(state, "skipped capability validation because no target was supplied")}
+            return {
+                "steps": append_step(state, "skipped capability validation because no target was supplied"),
+                "phases": append_phase(state, "validation execution", "not_applicable", "No live target was supplied."),
+            }
         if not state.get("services"):
-            return {"steps": append_step(state, "skipped capability validation because no open services were observed")}
+            return {
+                "steps": append_step(state, "skipped capability validation because no open services were observed"),
+                "phases": append_phase(state, "validation execution", "not_applicable", "No open services were observed."),
+            }
 
         selection = select_exploit_candidate(
             str(state["target"]),
             state.get("services", []),
             limit=state.get("max_capabilities", 5),
+            web_routes=state.get("web_routes"),
+            graph_memory=state.get("graph_memory"),
         )
         validation = run_selected_exploit(
             str(state["target"]),
@@ -418,10 +518,44 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             "capability_validation": validation,
             "agents": [*state.get("agents", []), output],
             "steps": append_step(state, "capability validation agent selected and executed matching validation tools"),
+            "phases": append_phase(
+                state,
+                "validation execution",
+                "success" if validation.get("successful", 0) else "ran_no_finding",
+                f"{validation.get('successful', 0)}/{validation.get('attempted', 0)} capability checks produced positive evidence.",
+            ),
             "tool_traces": [
                 *state.get("tool_traces", []),
                 make_trace("select_exploit_candidate", str(state["target"]), json.dumps(selection, indent=2)),
                 make_trace("run_selected_exploit", str(state["target"]), json.dumps(validation, indent=2)),
+            ],
+            "tool_timeline": [
+                *state.get("tool_timeline", []),
+                {
+                    "tool": "select_exploit_candidate",
+                    "input": str(state["target"]),
+                    "status": selection.get("decision", "unknown"),
+                    "evidence": json.dumps(
+                        [
+                            {
+                                "id": item.get("id"),
+                                "score": item.get("score"),
+                                "why": item.get("score_explanation"),
+                            }
+                            for item in selection.get("selected_candidates", [])
+                        ],
+                        indent=2,
+                    )[:1200],
+                },
+                *[
+                    {
+                        "tool": item.get("runner") or item.get("selected_exploit_id", ""),
+                        "input": item.get("selected_exploit_id", ""),
+                        "status": item.get("status", "unknown"),
+                        "evidence": (item.get("proof_output") or item.get("reason") or "")[:1200],
+                    }
+                    for item in validation.get("results", [])
+                ],
             ],
         }
 
@@ -524,9 +658,12 @@ that blockchain testing is not applicable for this campaign and list only monito
             "target": state.get("target"),
             "agents": state.get("agents", []),
             "services": state.get("services", []),
+            "web_fingerprint": state.get("web_fingerprint", {}),
             "web_routes": state.get("web_routes", {}),
+            "graph_memory": state.get("graph_memory", {}),
             "capability_selection": state.get("capability_selection", {}),
             "capability_validation": state.get("capability_validation", {}),
+            "tool_timeline": state.get("tool_timeline", []),
         }
         safety_review = safety_review_tool(json.dumps(draft, indent=2))
         prompt = f"""
@@ -576,7 +713,12 @@ Write the final campaign brief with:
             "report": report,
             "safety_review": safety_review,
             "steps": append_step(state, "reporting agent produced final campaign brief"),
+            "phases": append_phase(state, "reporting", "success", "Final campaign report and JSON trace produced."),
             "tool_traces": [*state.get("tool_traces", []), make_trace("reporting_agent", state["goal"], report)],
+            "tool_timeline": [
+                *state.get("tool_timeline", []),
+                {"tool": "reporting_agent", "input": state["goal"], "status": "success", "evidence": "Final report generated."},
+            ],
         }
 
     graph = StateGraph(CampaignState)
@@ -624,6 +766,25 @@ def deterministic_campaign_report(state: CampaignState, safety_review: str) -> s
                 "",
             ]
         )
+    lines.extend(["## Campaign Phases"])
+    for phase in state.get("phases", []):
+        lines.append(f"- {phase.get('phase')}: {phase.get('status')} - {phase.get('evidence', '')}")
+    graph_memory = state.get("graph_memory") or {}
+    if graph_memory.get("hits"):
+        lines.extend(
+            [
+                "",
+                "## Graph Memory Used",
+                *[
+                    f"- {hit.get('type')} `{hit.get('name')}` score={hit.get('score')}"
+                    for hit in graph_memory.get("hits", [])[:8]
+                ],
+            ]
+        )
+    if state.get("tool_timeline"):
+        lines.extend(["", "## Tool Timeline"])
+        for item in state.get("tool_timeline", [])[:30]:
+            lines.append(f"- {item.get('tool')}: {item.get('status')} - {item.get('evidence', '')[:180]}")
     lines.extend(
         [
             "## Safety Review",
@@ -649,6 +810,7 @@ def run_campaign(
     execution_mode: str = "safe",
     use_llm: bool = True,
     n_results: int = 5,
+    graph_memory_path: Path | None = None,
 ) -> CampaignRun:
     started = time.perf_counter()
     settings = load_settings()
@@ -665,12 +827,15 @@ def run_campaign(
         "use_llm": use_llm,
         "ports": ports or (default_ports_for_target(target) if target else []),
         "steps": [],
+        "phases": [],
         "agents": [],
         "sources": [],
         "tool_traces": [],
+        "tool_timeline": [],
+        "graph_memory": {},
     }
     try:
-        graph = build_campaign_graph(settings, provider=provider, n_results=n_results)
+        graph = build_campaign_graph(settings, provider=provider, n_results=n_results, graph_memory_path=graph_memory_path)
         final_state = graph.invoke(initial)
         elapsed = time.perf_counter() - started
         return CampaignRun(
@@ -685,9 +850,13 @@ def run_campaign(
             tcp=final_state.get("tcp"),
             services=final_state.get("services", []),
             http=final_state.get("http"),
+            web_fingerprint=final_state.get("web_fingerprint"),
             web_routes=final_state.get("web_routes"),
             capability_selection=final_state.get("capability_selection"),
             capability_validation=final_state.get("capability_validation"),
+            graph_memory=final_state.get("graph_memory"),
+            phases=final_state.get("phases", []),
+            tool_timeline=final_state.get("tool_timeline", []),
             safety_review=final_state.get("safety_review", ""),
             elapsed_seconds=elapsed,
         )
@@ -699,9 +868,12 @@ def run_campaign(
             provider=provider,
             report="",
             steps=initial["steps"],
+            phases=initial["phases"],
             agents=[],
             sources=[],
             tool_traces=[],
+            tool_timeline=[],
+            graph_memory={},
             elapsed_seconds=elapsed,
             error=repr(exc),
         )
@@ -730,8 +902,26 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         "## Capability Validation",
         json.dumps(payload.get("capability_validation") or {"status": "not run"}, indent=2),
         "",
+        "## Campaign Phases",
+        *[
+            f"- **{phase.get('phase')}**: `{phase.get('status')}` - {phase.get('evidence', '')}"
+            for phase in payload.get("phases", [])
+        ],
+        "",
+        "## Tool Timeline",
+        *[
+            f"- **{item.get('tool')}** `{item.get('status')}`: {item.get('evidence', '')[:500]}"
+            for item in payload.get("tool_timeline", [])
+        ],
+        "",
+        "## Graph Memory",
+        json.dumps(payload.get("graph_memory") or {"status": "not used"}, indent=2),
+        "",
         "## Web Route Discovery",
         json.dumps(payload.get("web_routes") or {"status": "not run"}, indent=2),
+        "",
+        "## Web Fingerprint",
+        json.dumps(payload.get("web_fingerprint") or {"status": "not run"}, indent=2),
         "",
         "## Steps",
         *[f"- {step}" for step in payload.get("steps", [])],

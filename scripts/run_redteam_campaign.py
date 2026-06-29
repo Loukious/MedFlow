@@ -51,6 +51,7 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
             f"Agents completed: {len(run.agents)}",
             f"Services observed: {len(run.services)}",
             f"Web routes found: {web_route_label(run)}",
+            f"Graph memory hits: {len((run.graph_memory or {}).get('hits', []))}",
             f"Capability validation: {validation_label(run)}",
             f"Retrieved sources: {len(run.sources)}",
             f"Safety review: {run.safety_review[:180] if run.safety_review else 'not run'}",
@@ -67,6 +68,12 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
         )
     console.print(agent_table)
 
+    if run.phases:
+        phases = Table("Phase", "Status", "Evidence")
+        for phase in run.phases:
+            phases.add_row(phase.get("phase", ""), phase.get("status", ""), phase.get("evidence", "")[:220])
+        console.print(phases)
+
     if run.services:
         services = Table("Port", "Service", "Version")
         for service in run.services:
@@ -78,10 +85,16 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
         for item in run.capability_validation["results"]:
             validation_table.add_row(
                 item.get("selected_exploit_id", ""),
-                "verified" if item.get("verified") else "not verified",
+                item.get("status") or ("verified" if item.get("verified") else "not verified"),
                 (item.get("proof_output") or item.get("reason") or "")[:260],
             )
         console.print(validation_table)
+
+    if run.tool_timeline:
+        timeline = Table("Tool", "Status", "Evidence")
+        for item in run.tool_timeline[:18]:
+            timeline.add_row(item.get("tool", ""), item.get("status", ""), item.get("evidence", "")[:260])
+        console.print(timeline)
 
     if run.web_routes and run.web_routes.get("web_routes"):
         routes_table = Table("URL", "Status", "Signal")
@@ -138,6 +151,7 @@ def main() -> None:
     parser.add_argument("--no-llm", action="store_true", help="Use deterministic role handoffs for a fast offline demo.")
     parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
     parser.add_argument("--results", type=int, default=5, help="Retrieved context results per query.")
+    parser.add_argument("--graph-memory", default="data/graph/medflow_graph.json", help="Optional graph-memory JSON path.")
     parser.add_argument("--output-dir", default="reports/redteam_campaign", help="Directory for JSON and Markdown outputs.")
     parser.add_argument("--report", action="store_true", help="Print the generated campaign report.")
     parser.add_argument("--traces", action="store_true", help="Print role/tool traces.")
@@ -155,6 +169,7 @@ def main() -> None:
         execution_mode=args.execution_mode,
         use_llm=not args.no_llm,
         n_results=args.results,
+        graph_memory_path=Path(args.graph_memory) if args.graph_memory else None,
     )
     saved = save_campaign_run(run, Path(args.output_dir))
 

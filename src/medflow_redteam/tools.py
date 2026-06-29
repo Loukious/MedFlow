@@ -7,10 +7,12 @@ import shutil
 import socket
 import subprocess
 import time
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
 from ftplib import FTP
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -302,6 +304,104 @@ def web_route_discovery(target: str, ports: list[int] | None = None, paths: list
     return {"web_routes": output}
 
 
+def web_fingerprint(target: str, ports: list[int] | None = None) -> dict:
+    target = validate_target(target)
+    selected_ports = ports or [80, 443, 8080, 8000, 5000, 8443]
+    fingerprints = []
+    for port in selected_ports:
+        scheme = "https" if port in {443, 8443} else "http"
+        url = f"{scheme}://{target}:{port}/"
+        started = time.perf_counter()
+        try:
+            request = Request(url, headers={"User-Agent": "MedFlow-RedTeam-Lab/0.1"})
+            with urlopen(request, timeout=4) as response:
+                body = response.read(8192).decode("utf-8", errors="replace")
+                headers = {key.lower(): value for key, value in response.headers.items()}
+                fingerprints.append(
+                    {
+                        "url": url,
+                        "status": response.status,
+                        "server": headers.get("server", ""),
+                        "powered_by": headers.get("x-powered-by", ""),
+                        "set_cookie_present": bool(headers.get("set-cookie")),
+                        "security_headers": {
+                            "content_security_policy": bool(headers.get("content-security-policy")),
+                            "strict_transport_security": bool(headers.get("strict-transport-security")),
+                            "x_frame_options": bool(headers.get("x-frame-options")),
+                            "x_content_type_options": bool(headers.get("x-content-type-options")),
+                        },
+                        "technology_signals": web_technology_signals(headers, body),
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                    }
+                )
+        except Exception as exc:
+            fingerprints.append({"url": url, "error": str(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)})
+    return {"web_fingerprints": fingerprints}
+
+
+def web_technology_signals(headers: dict[str, str], body: str) -> list[str]:
+    text = f"{headers.get('server', '')} {headers.get('x-powered-by', '')} {body[:4000]}".lower()
+    signals = []
+    checks = {
+        "gunicorn": "gunicorn",
+        "flask": "flask",
+        "django": "django",
+        "express": "express",
+        "php": "php",
+        "wordpress": "wp-content",
+        "jquery": "jquery",
+        "bootstrap": "bootstrap",
+    }
+    for name, marker in checks.items():
+        if marker in text:
+            signals.append(name)
+    return sorted(set(signals))
+
+
+def parse_zap_json_report(path: str | Path) -> dict[str, Any]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    alerts = []
+    for site in data.get("site", []):
+        for alert in site.get("alerts", []):
+            alerts.append(
+                {
+                    "tool": "zap",
+                    "name": alert.get("alert") or alert.get("name"),
+                    "risk": alert.get("riskdesc") or alert.get("riskcode"),
+                    "confidence": alert.get("confidence"),
+                    "description": alert.get("desc"),
+                    "solution": alert.get("solution"),
+                    "instances": alert.get("instances", []),
+                }
+            )
+    return {"findings": alerts, "count": len(alerts)}
+
+
+def parse_burp_xml_report(path: str | Path) -> dict[str, Any]:
+    root = ET.fromstring(Path(path).read_text(encoding="utf-8"))
+    findings = []
+    for issue in root.findall(".//issue"):
+        findings.append(
+            {
+                "tool": "burp",
+                "name": text_or_empty(issue, "name"),
+                "severity": text_or_empty(issue, "severity"),
+                "confidence": text_or_empty(issue, "confidence"),
+                "host": text_or_empty(issue, "host"),
+                "path": text_or_empty(issue, "path"),
+                "location": text_or_empty(issue, "location"),
+                "issue_background": text_or_empty(issue, "issueBackground"),
+                "remediation_background": text_or_empty(issue, "remediationBackground"),
+            }
+        )
+    return {"findings": findings, "count": len(findings)}
+
+
+def text_or_empty(node: ET.Element, child: str) -> str:
+    found = node.find(child)
+    return "".join(found.itertext()).strip() if found is not None else ""
+
+
 def artifact_signal(url: str, content_type: str, body: bytes) -> str:
     lowered_url = url.lower()
     lowered_type = content_type.lower()
@@ -315,10 +415,22 @@ def artifact_signal(url: str, content_type: str, body: bytes) -> str:
     return ""
 
 
-def select_exploit_candidate(target: str, services: list[dict[str, str]], limit: int = 1) -> dict:
+def select_exploit_candidate(
+    target: str,
+    services: list[dict[str, str]],
+    limit: int = 1,
+    web_routes: dict[str, Any] | None = None,
+    graph_memory: dict[str, Any] | None = None,
+) -> dict:
     """Select the best capability candidates from observed service evidence."""
     target = validate_target(target)
-    return select_capabilities_for_services(target, services, limit=limit)
+    return select_capabilities_for_services(
+        target,
+        services,
+        limit=limit,
+        web_routes=web_routes,
+        graph_memory=graph_memory,
+    )
 
 
 def run_selected_exploit(
@@ -345,6 +457,7 @@ def run_selected_exploit(
         "allowed": True,
         "exploited": any(item.get("exploited") for item in results),
         "verified": bool(verified_results),
+        "status_counts": status_counts(results),
         "proof_output": "\n".join(
             f"{item.get('selected_exploit_id')}: {item.get('proof_output')}"
             for item in verified_results
@@ -371,6 +484,7 @@ def run_one_selected_capability(
             "allowed": False,
             "exploited": False,
             "verified": False,
+            "status": "blocked_by_safety_policy",
             "reason": f"Capability is metadata-only or not marked safe to execute in {execution_mode} mode.",
             "selected_exploit_id": exploit_id,
             "selected_exploit_name": selected.get("name"),
@@ -400,7 +514,36 @@ def run_one_selected_capability(
     result["selected_exploit_name"] = selected.get("name")
     result["selection_score"] = selected.get("score")
     result["selection_reasons"] = selected.get("reasons", [])
+    result["score_explanation"] = selected.get("score_explanation") or "; ".join(selected.get("reasons", []))
+    result["provider"] = selected.get("provider")
+    result["runner"] = selected.get("runner")
+    result["status"] = normalize_validation_status(result, selected)
     return result
+
+
+def status_counts(results: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in results:
+        status = str(item.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def normalize_validation_status(result: dict[str, Any], capability: dict[str, Any] | None = None) -> str:
+    if not result.get("allowed", True):
+        return "blocked_by_safety_policy"
+    if result.get("tool_error") or (result.get("stderr") and not result.get("reason") and not result.get("verified")):
+        return "tool_error"
+    if result.get("exploited"):
+        return "confirmed_vulnerability"
+    if result.get("verified"):
+        runner = (capability or {}).get("runner") or result.get("runner")
+        if runner in {"ftp_anonymous_login", "mysql_handshake_probe"}:
+            return "confirmed_exposure"
+        return "confirmed_vulnerability" if result.get("metasploit_action") == "check" else "confirmed_exposure"
+    if result.get("reason"):
+        return "ran_no_finding"
+    return "not_applicable"
 
 
 def can_execute_aggressive(capability: dict, execution_mode: str) -> bool:

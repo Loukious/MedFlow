@@ -244,8 +244,10 @@ python scripts/run_redteam_campaign.py "Validate identity and web attack paths a
 Run the campaign planner with active recon and capability validation against an allowlisted HTB-style lab target:
 
 ```bash
-python scripts/run_redteam_campaign.py "Validate identity and web attack paths against the HTB target" --target 10.129.32.115 --ports 1-1000 --execute-validation --max-capabilities 8 --execution-mode aggressive_lab --no-llm
+python scripts/run_redteam_campaign.py "Assess an unknown authorized lab target and identify viable validation paths" --target 10.129.32.115 --ports 1-1000 --execute-validation --max-capabilities 8 --execution-mode aggressive_lab --no-llm
 ```
+
+Keep the goal generic for unknown targets. The campaign logic should learn from observed ports, service fingerprints, web routes, artifacts, and tool outputs rather than from a machine name or challenge hint.
 
 For direct tool validation without the multi-agent campaign layer, use the lab runner:
 

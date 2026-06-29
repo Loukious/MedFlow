@@ -6,6 +6,7 @@ data/chroma/
 data/kaggle/
 data/capabilities/
 data/capability_sources/
+data/graph/
 reports/
 *.pyc
 .env

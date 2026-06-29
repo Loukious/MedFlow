@@ -261,6 +261,27 @@ Search graph memory directly without an LLM:
 python scripts/query_graph_memory.py "packet capture exposure web route" --limit 8
 ```
 
+Run bounded closed-loop validation with explicit budgets:
+
+```bash
+python scripts/run_redteam_campaign.py "Assess an unknown authorized lab target and identify viable validation paths" --target 10.129.32.115 --ports 1-1000 --loop --max-rounds 3 --max-tools 12 --execution-mode aggressive_lab --no-llm
+```
+
+`--loop` enables validation automatically and stops on success by default. Use `--no-stop-on-success` only when you want it to keep trying additional safe capability checks after a positive result.
+
+Review graph-memory duplicate decisions:
+
+```bash
+python scripts/review_graph_memory.py
+```
+
+Analyze exported identity evidence without live authentication attempts:
+
+```bash
+python scripts/analyze_identity_import.py identity-events.json --type logs
+python scripts/analyze_identity_import.py bloodhound-export.json --type bloodhound
+```
+
 For direct tool validation without the multi-agent campaign layer, use the lab runner:
 
 ```bash

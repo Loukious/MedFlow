@@ -19,6 +19,7 @@ from medflow_ti.config import Settings, load_settings
 from medflow_ti.llm import LLMError, is_llm_api_error
 from medflow_graph.memory import GraphStore
 
+from .evidence import normalize_validation_evidence, normalize_web_evidence, render_findings_table
 from .tools import (
     ToolResult,
     default_ports_for_target,
@@ -30,6 +31,7 @@ from .tools import (
     summarize_tool_result,
     tcp_connect_check,
     validate_target,
+    web_control_checks,
     web_fingerprint,
     web_route_discovery,
 )
@@ -64,6 +66,9 @@ class CampaignRun:
     capability_selection: dict[str, Any] | None = None
     capability_validation: dict[str, Any] | None = None
     graph_memory: dict[str, Any] | None = None
+    web_checks: dict[str, Any] | None = None
+    normalized_evidence: list[dict[str, Any]] = field(default_factory=list)
+    loop_summary: dict[str, Any] | None = None
     phases: list[dict[str, Any]] = field(default_factory=list)
     tool_timeline: list[dict[str, Any]] = field(default_factory=list)
     safety_review: str = ""
@@ -90,6 +95,9 @@ class CampaignState(TypedDict, total=False):
     capability_selection: dict[str, Any]
     capability_validation: dict[str, Any]
     graph_memory: dict[str, Any]
+    web_checks: dict[str, Any]
+    normalized_evidence: list[dict[str, Any]]
+    loop_summary: dict[str, Any]
     phases: list[dict[str, Any]]
     tool_timeline: list[dict[str, Any]]
     sources: list[dict[str, Any]]
@@ -358,6 +366,7 @@ and success criteria. Do not provide exploit instructions.
         http = state.get("http")
         web_routes = state.get("web_routes")
         fingerprints = state.get("web_fingerprint")
+        web_checks = state.get("web_checks")
         traces = state.get("tool_traces", [])
         steps = state.get("steps", [])
         if state.get("execute_recon") and state.get("target"):
@@ -373,6 +382,7 @@ and success criteria. Do not provide exploit instructions.
             http = http_probe(target, ports=http_ports or None)
             fingerprints = web_fingerprint(target, ports=http_ports or None)
             web_routes = web_route_discovery(target, ports=http_ports or None)
+            web_checks = web_control_checks(web_routes, fingerprints)
             steps = [*steps, "reconnaissance agent executed TCP, Nmap, and HTTP probes against the allowlisted target"]
             timeline = state.get("tool_timeline", [])
             timeline = [
@@ -382,6 +392,7 @@ and success criteria. Do not provide exploit instructions.
                 {"tool": "http_probe", "input": target, "status": "success", "evidence": json.dumps(http, indent=2)[:1200]},
                 {"tool": "web_fingerprint", "input": target, "status": "success", "evidence": json.dumps(fingerprints, indent=2)[:1200]},
                 {"tool": "web_route_discovery", "input": target, "status": "success", "evidence": json.dumps(web_routes, indent=2)[:1200]},
+                {"tool": "web_control_checks", "input": target, "status": "success", "evidence": json.dumps(web_checks, indent=2)[:1200]},
             ]
             traces = [
                 *traces,
@@ -390,6 +401,7 @@ and success criteria. Do not provide exploit instructions.
                 make_trace("http_probe", target, json.dumps(http, indent=2)),
                 make_trace("web_fingerprint", target, json.dumps(fingerprints, indent=2)),
                 make_trace("web_route_discovery", target, json.dumps(web_routes, indent=2)),
+                make_trace("web_control_checks", target, json.dumps(web_checks, indent=2)),
             ]
             sources = retrieve_many(build_campaign_queries(state["goal"], services), settings=settings, n_results=n_results)
         else:
@@ -457,6 +469,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             "http": http,
             "web_fingerprint": fingerprints,
             "web_routes": web_routes,
+            "web_checks": web_checks,
             "graph_memory": graph_memory,
             "sources": sources,
             "agents": [*state.get("agents", []), output],
@@ -660,10 +673,12 @@ that blockchain testing is not applicable for this campaign and list only monito
             "services": state.get("services", []),
             "web_fingerprint": state.get("web_fingerprint", {}),
             "web_routes": state.get("web_routes", {}),
+            "web_checks": state.get("web_checks", {}),
             "graph_memory": state.get("graph_memory", {}),
             "capability_selection": state.get("capability_selection", {}),
             "capability_validation": state.get("capability_validation", {}),
             "tool_timeline": state.get("tool_timeline", []),
+            "normalized_evidence": state.get("normalized_evidence", []),
         }
         safety_review = safety_review_tool(json.dumps(draft, indent=2))
         prompt = f"""
@@ -785,6 +800,9 @@ def deterministic_campaign_report(state: CampaignState, safety_review: str) -> s
         lines.extend(["", "## Tool Timeline"])
         for item in state.get("tool_timeline", [])[:30]:
             lines.append(f"- {item.get('tool')}: {item.get('status')} - {item.get('evidence', '')[:180]}")
+    evidence = state.get("normalized_evidence", [])
+    if evidence:
+        lines.extend(["", "## Normalized Findings", render_findings_table(evidence)])
     lines.extend(
         [
             "## Safety Review",
@@ -811,6 +829,11 @@ def run_campaign(
     use_llm: bool = True,
     n_results: int = 5,
     graph_memory_path: Path | None = None,
+    loop: bool = False,
+    max_rounds: int = 3,
+    max_tools: int = 12,
+    max_failed_rounds: int = 2,
+    stop_on_success: bool = True,
 ) -> CampaignRun:
     started = time.perf_counter()
     settings = load_settings()
@@ -833,10 +856,27 @@ def run_campaign(
         "tool_traces": [],
         "tool_timeline": [],
         "graph_memory": {},
+        "web_checks": {},
+        "normalized_evidence": [],
+        "loop_summary": {},
     }
     try:
         graph = build_campaign_graph(settings, provider=provider, n_results=n_results, graph_memory_path=graph_memory_path)
         final_state = graph.invoke(initial)
+        if loop and execute_validation:
+            final_state = run_validation_loop(
+                final_state,
+                max_rounds=max_rounds,
+                max_tools=max_tools,
+                max_failed_rounds=max_failed_rounds,
+                stop_on_success=stop_on_success,
+            )
+        final_state["normalized_evidence"] = [
+            *normalize_web_evidence(final_state.get("web_checks")),
+            *normalize_validation_evidence(final_state.get("capability_validation")),
+        ]
+        if final_state.get("normalized_evidence"):
+            final_state["report"] = f"{final_state.get('report', '')}\n\n## Normalized Findings\n{render_findings_table(final_state['normalized_evidence'])}"
         elapsed = time.perf_counter() - started
         return CampaignRun(
             goal=goal,
@@ -855,6 +895,9 @@ def run_campaign(
             capability_selection=final_state.get("capability_selection"),
             capability_validation=final_state.get("capability_validation"),
             graph_memory=final_state.get("graph_memory"),
+            web_checks=final_state.get("web_checks"),
+            normalized_evidence=final_state.get("normalized_evidence", []),
+            loop_summary=final_state.get("loop_summary"),
             phases=final_state.get("phases", []),
             tool_timeline=final_state.get("tool_timeline", []),
             safety_review=final_state.get("safety_review", ""),
@@ -874,9 +917,123 @@ def run_campaign(
             tool_traces=[],
             tool_timeline=[],
             graph_memory={},
+            web_checks={},
+            normalized_evidence=[],
+            loop_summary={},
             elapsed_seconds=elapsed,
             error=repr(exc),
         )
+
+
+def run_validation_loop(
+    state: CampaignState,
+    *,
+    max_rounds: int,
+    max_tools: int,
+    max_failed_rounds: int,
+    stop_on_success: bool,
+) -> CampaignState:
+    if not state.get("target") or not state.get("services"):
+        state["loop_summary"] = {"enabled": True, "rounds": 0, "stop_reason": "missing_target_or_services"}
+        return state
+    attempted_ids = {
+        str(item.get("selected_exploit_id"))
+        for item in (state.get("capability_validation") or {}).get("results", [])
+        if item.get("selected_exploit_id")
+    }
+    total_tools = len(attempted_ids)
+    failed_rounds = 0
+    rounds: list[dict[str, Any]] = []
+    if stop_on_success and (state.get("capability_validation") or {}).get("successful", 0):
+        state["loop_summary"] = {"enabled": True, "rounds": 0, "stop_reason": "initial_success", "attempted_ids": sorted(attempted_ids)}
+        return state
+
+    combined_results = list((state.get("capability_validation") or {}).get("results", []))
+    stop_reason = "max_rounds"
+    for round_index in range(2, max_rounds + 1):
+        if total_tools >= max_tools:
+            stop_reason = "tool_budget_exhausted"
+            break
+        selection = select_exploit_candidate(
+            str(state["target"]),
+            state.get("services", []),
+            limit=max(1, min(state.get("max_capabilities", 5), max_tools - total_tools)),
+            web_routes=state.get("web_routes"),
+            graph_memory=state.get("graph_memory"),
+        )
+        selected = [
+            item for item in selection.get("selected_candidates", [])
+            if str(item.get("id")) not in attempted_ids
+        ]
+        selection["selected_candidates"] = selected
+        selection["selected"] = selected[0] if selected else None
+        if not selected:
+            stop_reason = "no_new_capabilities"
+            break
+        validation = run_selected_exploit(
+            str(state["target"]),
+            selection,
+            execution_mode=state.get("execution_mode", "safe"),
+        )
+        for item in validation.get("results", []):
+            if item.get("selected_exploit_id"):
+                attempted_ids.add(str(item["selected_exploit_id"]))
+        total_tools += validation.get("attempted", 0)
+        combined_results.extend(validation.get("results", []))
+        success = validation.get("successful", 0)
+        failed_rounds = 0 if success else failed_rounds + 1
+        rounds.append(
+            {
+                "round": round_index,
+                "attempted": validation.get("attempted", 0),
+                "successful": success,
+                "status_counts": validation.get("status_counts", {}),
+            }
+        )
+        state["tool_timeline"] = [
+            *state.get("tool_timeline", []),
+            {
+                "tool": "closed_loop_validation",
+                "input": f"round {round_index}",
+                "status": "success" if success else "ran_no_finding",
+                "evidence": json.dumps(rounds[-1], indent=2),
+            },
+        ]
+        if stop_on_success and success:
+            stop_reason = "success"
+            break
+        if failed_rounds >= max_failed_rounds:
+            stop_reason = "failed_round_budget_exhausted"
+            break
+
+    successful = [item for item in combined_results if item.get("verified")]
+    state["capability_validation"] = {
+        **(state.get("capability_validation") or {}),
+        "results": combined_results,
+        "attempted": len(combined_results),
+        "successful": len(successful),
+        "verified": bool(successful),
+        "status_counts": validation_status_counts(combined_results),
+    }
+    state["loop_summary"] = {
+        "enabled": True,
+        "rounds": len(rounds),
+        "stop_reason": stop_reason,
+        "max_rounds": max_rounds,
+        "max_tools": max_tools,
+        "attempted_ids": sorted(attempted_ids),
+        "rounds_detail": rounds,
+    }
+    state["phases"] = append_phase(state, "closed-loop validation", stop_reason, f"{len(rounds)} additional round(s), {len(successful)} positive result(s) total.")
+    return state
+
+
+def validation_status_counts(results: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in results:
+        status = str(item.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
 
 
 def save_campaign_run(run: CampaignRun, output_dir: Path) -> dict[str, Path]:
@@ -902,6 +1059,12 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         "## Capability Validation",
         json.dumps(payload.get("capability_validation") or {"status": "not run"}, indent=2),
         "",
+        "## Closed-Loop Summary",
+        json.dumps(payload.get("loop_summary") or {"status": "not enabled"}, indent=2),
+        "",
+        "## Normalized Findings",
+        render_findings_table(payload.get("normalized_evidence") or []),
+        "",
         "## Campaign Phases",
         *[
             f"- **{phase.get('phase')}**: `{phase.get('status')}` - {phase.get('evidence', '')}"
@@ -922,6 +1085,9 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         "",
         "## Web Fingerprint",
         json.dumps(payload.get("web_fingerprint") or {"status": "not run"}, indent=2),
+        "",
+        "## Web Control Checks",
+        json.dumps(payload.get("web_checks") or {"status": "not run"}, indent=2),
         "",
         "## Steps",
         *[f"- {step}" for step in payload.get("steps", [])],

@@ -339,6 +339,60 @@ def web_fingerprint(target: str, ports: list[int] | None = None) -> dict:
     return {"web_fingerprints": fingerprints}
 
 
+def web_control_checks(web_routes: dict[str, Any] | None, fingerprints: dict[str, Any] | None) -> dict[str, Any]:
+    """Derive safe web findings from observed routes/fingerprints."""
+    findings: list[dict[str, Any]] = []
+    for item in (web_routes or {}).get("web_routes", []):
+        if item.get("artifact_signal"):
+            findings.append(
+                {
+                    "check": "artifact_exposure",
+                    "title": item.get("artifact_signal"),
+                    "url": item.get("url", ""),
+                    "status": "confirmed_exposure",
+                    "severity": "medium",
+                    "confidence": "medium",
+                    "evidence": f"{item.get('url')} returned {item.get('content_type')} with signal {item.get('artifact_signal')}",
+                    "remediation": "Require authorization for downloadable artifacts and remove sensitive files from web-accessible paths.",
+                    "references": ["web_route_discovery"],
+                }
+            )
+    for item in (fingerprints or {}).get("web_fingerprints", []):
+        if item.get("error"):
+            continue
+        headers = item.get("security_headers") or {}
+        missing = [name for name, present in headers.items() if not present]
+        if missing:
+            findings.append(
+                {
+                    "check": "missing_security_headers",
+                    "title": "Missing common browser security headers",
+                    "url": item.get("url", ""),
+                    "status": "confirmed_exposure",
+                    "severity": "low",
+                    "confidence": "medium",
+                    "evidence": "Missing: " + ", ".join(sorted(missing)),
+                    "remediation": "Set appropriate CSP, HSTS, X-Frame-Options, and X-Content-Type-Options headers where applicable.",
+                    "references": ["web_fingerprint"],
+                }
+            )
+        if item.get("set_cookie_present") and not headers.get("strict_transport_security"):
+            findings.append(
+                {
+                    "check": "cookie_without_hsts_signal",
+                    "title": "Cookie observed without HSTS signal",
+                    "url": item.get("url", ""),
+                    "status": "confirmed_exposure",
+                    "severity": "low",
+                    "confidence": "low",
+                    "evidence": "Set-Cookie header was observed while Strict-Transport-Security was absent from the fingerprint.",
+                    "remediation": "For HTTPS services, enable HSTS and review cookie Secure/HttpOnly/SameSite attributes.",
+                    "references": ["web_fingerprint"],
+                }
+            )
+    return {"findings": findings, "count": len(findings)}
+
+
 def web_technology_signals(headers: dict[str, str], body: str) -> list[str]:
     text = f"{headers.get('server', '')} {headers.get('x-powered-by', '')} {body[:4000]}".lower()
     signals = []

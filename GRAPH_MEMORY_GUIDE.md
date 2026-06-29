@@ -94,7 +94,21 @@ The Streamlit UI also has a `Graph Memory` mode for:
 - graph summary,
 - direct search,
 - report ingestion,
-- pending-memory inspection through search results.
+- pending-memory inspection through search results,
+- duplicate review confirmation/rejection.
+
+Review pending duplicate candidates from the terminal:
+
+```bash
+.venv/bin/python scripts/review_graph_memory.py --graph data/graph/medflow_graph.json
+```
+
+Apply a review decision:
+
+```bash
+.venv/bin/python scripts/review_graph_memory.py --confirm review:abc123
+.venv/bin/python scripts/review_graph_memory.py --reject review:abc123
+```
 
 ## Campaign Integration
 
@@ -112,6 +126,24 @@ Saved campaign JSON and Markdown now include:
 - `tool_timeline`: tool calls and evidence previews.
 - `graph_memory`: matched prior graph evidence.
 - `web_fingerprint`: lightweight web stack/header signals.
+- `web_checks`: safe web control observations.
+- `normalized_evidence`: report-ready evidence objects.
+- `loop_summary`: closed-loop stop reason and round details when loop mode is enabled.
+
+Run a bounded closed-loop campaign:
+
+```bash
+.venv/bin/python scripts/run_redteam_campaign.py "Assess an unknown authorized lab target and identify viable validation paths" --target 10.129.32.115 --ports 1-1000 --loop --max-rounds 3 --max-tools 12 --execution-mode aggressive_lab --no-llm
+```
+
+Stop conditions include:
+
+- `success`
+- `initial_success`
+- `no_new_capabilities`
+- `tool_budget_exhausted`
+- `failed_round_budget_exhausted`
+- `missing_target_or_services`
 
 ## Validation Statuses
 
@@ -136,6 +168,22 @@ MedFlow can normalize exported web scanner reports without launching a scanner:
 ```
 
 These adapters are intentionally import-focused so the campaign can consume authorized evidence without turning the agent into an uncontrolled web scanner.
+
+## Identity Imports
+
+Analyze exported identity logs for MFA fatigue-like patterns:
+
+```bash
+.venv/bin/python scripts/analyze_identity_import.py identity-events.json --type logs
+```
+
+Analyze exported BloodHound-style graph JSON:
+
+```bash
+.venv/bin/python scripts/analyze_identity_import.py bloodhound-export.json --type bloodhound
+```
+
+These analyzers inspect exported data only. They do not attempt live logins, password spraying, Kerberos requests, or MFA prompts.
 
 ## Why This Helps
 

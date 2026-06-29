@@ -128,6 +128,39 @@ if st.button(button_label, type="primary") and question.strip():
 
 if mode == "Graph Memory":
     st.divider()
+    st.subheader("Duplicate Review Queue")
+    review_store = GraphStore.load(Path(graph_path))
+    pending_reviews = review_store.pending_reviews()
+    st.caption(f"Pending reviews: {len(pending_reviews)}")
+    if pending_reviews:
+        review_labels = [
+            f"{review.id} · {review.confidence:.3f}"
+            for review in pending_reviews[:50]
+        ]
+        selected_review_label = st.selectbox("Review", review_labels)
+        selected_review_id = selected_review_label.split(" · ", 1)[0]
+        selected_review = review_store.reviews[selected_review_id]
+        left = review_store.nodes.get(selected_review.source)
+        right = review_store.nodes.get(selected_review.target)
+        st.write(
+            {
+                "source": f"{left.type if left else '?'}: {left.canonical_name if left else selected_review.source}",
+                "target": f"{right.type if right else '?'}: {right.canonical_name if right else selected_review.target}",
+                "confidence": selected_review.confidence,
+                "reason": selected_review.reason,
+            }
+        )
+        col_confirm, col_reject = st.columns(2)
+        if col_confirm.button("Confirm Merge"):
+            review_store.apply_review(selected_review_id, "confirm")
+            review_store.save()
+            st.success("Review confirmed and nodes merged.")
+        if col_reject.button("Reject Merge"):
+            review_store.apply_review(selected_review_id, "reject")
+            review_store.save()
+            st.success("Review rejected.")
+
+    st.divider()
     st.subheader("Ingest Campaign Reports")
     pattern = st.text_input("Report glob", value="reports/redteam_campaign/*.json")
     run_dream = st.checkbox("Run dedup cleanup after ingest", value=True)

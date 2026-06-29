@@ -52,6 +52,8 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
             f"Services observed: {len(run.services)}",
             f"Web routes found: {web_route_label(run)}",
             f"Graph memory hits: {len((run.graph_memory or {}).get('hits', []))}",
+            f"Normalized evidence: {len(run.normalized_evidence)}",
+            f"Loop stop: {(run.loop_summary or {}).get('stop_reason', 'not enabled')}",
             f"Capability validation: {validation_label(run)}",
             f"Retrieved sources: {len(run.sources)}",
             f"Safety review: {run.safety_review[:180] if run.safety_review else 'not run'}",
@@ -95,6 +97,17 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
         for item in run.tool_timeline[:18]:
             timeline.add_row(item.get("tool", ""), item.get("status", ""), item.get("evidence", "")[:260])
         console.print(timeline)
+
+    if run.normalized_evidence:
+        evidence_table = Table("Severity", "Status", "Asset", "Finding")
+        for item in run.normalized_evidence[:18]:
+            evidence_table.add_row(
+                item.get("severity", ""),
+                item.get("status", ""),
+                item.get("asset", ""),
+                item.get("title", "")[:120],
+            )
+        console.print(evidence_table)
 
     if run.web_routes and run.web_routes.get("web_routes"):
         routes_table = Table("URL", "Status", "Signal")
@@ -152,6 +165,11 @@ def main() -> None:
     parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
     parser.add_argument("--results", type=int, default=5, help="Retrieved context results per query.")
     parser.add_argument("--graph-memory", default="data/graph/medflow_graph.json", help="Optional graph-memory JSON path.")
+    parser.add_argument("--loop", action="store_true", help="Run bounded closed-loop validation rounds after the initial pass.")
+    parser.add_argument("--max-rounds", type=int, default=3, help="Maximum total validation rounds when --loop is enabled.")
+    parser.add_argument("--max-tools", type=int, default=12, help="Maximum total validation tools when --loop is enabled.")
+    parser.add_argument("--max-failed-rounds", type=int, default=2, help="Stop loop after this many non-finding rounds.")
+    parser.add_argument("--no-stop-on-success", action="store_true", help="Continue loop even after a positive validation result.")
     parser.add_argument("--output-dir", default="reports/redteam_campaign", help="Directory for JSON and Markdown outputs.")
     parser.add_argument("--report", action="store_true", help="Print the generated campaign report.")
     parser.add_argument("--traces", action="store_true", help="Print role/tool traces.")
@@ -164,12 +182,17 @@ def main() -> None:
         ports=parse_ports(args.ports),
         provider=args.provider,
         execute_recon=args.execute_recon,
-        execute_validation=args.execute_validation,
+        execute_validation=args.execute_validation or args.loop,
         max_capabilities=args.max_capabilities,
         execution_mode=args.execution_mode,
         use_llm=not args.no_llm,
         n_results=args.results,
         graph_memory_path=Path(args.graph_memory) if args.graph_memory else None,
+        loop=args.loop,
+        max_rounds=args.max_rounds,
+        max_tools=args.max_tools,
+        max_failed_rounds=args.max_failed_rounds,
+        stop_on_success=not args.no_stop_on_success,
     )
     saved = save_campaign_run(run, Path(args.output_dir))
 

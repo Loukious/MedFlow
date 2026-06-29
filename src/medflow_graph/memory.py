@@ -465,6 +465,28 @@ class GraphStore:
             reason=reason,
         )
 
+    def pending_reviews(self) -> list[ReviewItem]:
+        return sorted(
+            [review for review in self.reviews.values() if review.status == "pending"],
+            key=lambda item: item.confidence,
+            reverse=True,
+        )
+
+    def apply_review(self, review_id: str, decision: str) -> ReviewItem:
+        if review_id not in self.reviews:
+            raise KeyError(f"Unknown review id: {review_id}")
+        review = self.reviews[review_id]
+        if review.status != "pending":
+            return review
+        if decision == "confirm":
+            self.merge_existing_nodes(review.target, review.source)
+            review.status = "confirmed"
+        elif decision == "reject":
+            review.status = "rejected"
+        else:
+            raise ValueError("decision must be 'confirm' or 'reject'")
+        return review
+
     def merge_existing_nodes(self, keep_id: str, remove_id: str) -> None:
         if keep_id == remove_id or keep_id not in self.nodes or remove_id not in self.nodes:
             return
@@ -650,6 +672,33 @@ def ingest_campaign_report(store: GraphStore, report_path: Path | str) -> dict[s
         stats["edges"] += 1
         if target_node:
             store.add_edge(target_node.id, fp_node.id, "HAS_WEB_FINGERPRINT", source_id=source_id)
+            stats["edges"] += 1
+
+    for item in payload.get("normalized_evidence") or []:
+        title = str(item.get("title") or item.get("type") or "Normalized finding")
+        asset = str(item.get("asset") or target or "")
+        finding = track(
+            store.upsert_node(
+                "Finding",
+                title,
+                attributes={
+                    "name": title,
+                    "finding_type": item.get("type"),
+                    "asset": asset,
+                    "status": item.get("status"),
+                    "severity": item.get("severity"),
+                    "confidence": item.get("confidence"),
+                    "proof_kind": item.get("proof_kind"),
+                },
+                context=str(item.get("safe_summary") or ""),
+                source_id=source_id,
+                stable_key=f"{campaign_id}:{title}:{asset}:{item.get('status')}",
+            )
+        )
+        store.add_edge(campaign.id, finding.id, "HAS_FINDING", source_id=source_id)
+        stats["edges"] += 1
+        if target_node:
+            store.add_edge(target_node.id, finding.id, "HAS_FINDING", source_id=source_id)
             stats["edges"] += 1
 
     validation = payload.get("capability_validation") or {}

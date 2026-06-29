@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "service_discovery": "service_light",
+    "service_discovery_large": "service_light",
+    "safe_scripts": "default_safe_scripts",
+    "single_script": "single_nse"
+  },
+  "selection": {
+    "large_port_threshold": 1000
+  },
+  "profiles": {
+    "service_light": {
+      "description": "Light service and version detection for authorized lab targets.",
+      "args": ["-sV", "-Pn", "--version-light", "--reason"],
+      "timeout": 180
+    },
+    "default_safe_scripts": {
+      "description": "Nmap default/safe NSE validation against discovered open ports.",
+      "args": ["-sV", "-Pn", "--script", "default,safe"],
+      "timeout": 240
+    },
+    "single_nse": {
+      "description": "Execute one selected NSE script from the capability inventory.",
+      "args": ["-sV", "-Pn", "--script", "{script_name}"],
+      "timeout": 90
+    }
+  }
+}

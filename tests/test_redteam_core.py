@@ -10,7 +10,7 @@ from medflow_redteam.campaign import http_ports_from_services, observation_statu
 from medflow_redteam.capabilities import capability_match_score, select_capabilities_for_services
 from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_generated_tool_code, validate_generated_tool_code
 from medflow_redteam.identity import analyze_identity_logs
-from medflow_redteam.tools import normalize_validation_status, web_control_checks
+from medflow_redteam.tools import nmap_profile_command, normalize_validation_status, web_control_checks
 
 
 class RedTeamCoreTests(unittest.TestCase):
@@ -98,6 +98,20 @@ class RedTeamCoreTests(unittest.TestCase):
         )
         self.assertEqual(selected["selected_candidates"][0]["id"], "generated:unrealircd_3281_rce")
         self.assertEqual(selected["selected_candidates"][0]["runner"], "generated_python_tool")
+
+    def test_nmap_profiles_are_config_driven(self) -> None:
+        command, timeout = nmap_profile_command("172.29.10.10", [22, 80], "service_light")
+        self.assertEqual(command, ["nmap", "-sV", "-Pn", "--version-light", "--reason", "-p", "22,80", "172.29.10.10"])
+        self.assertEqual(timeout, 180)
+
+        script_command, script_timeout = nmap_profile_command(
+            "172.29.10.10",
+            [21],
+            "single_nse",
+            variables={"script_name": "ftp-anon"},
+        )
+        self.assertIn("ftp-anon", script_command)
+        self.assertEqual(script_timeout, 90)
 
     def test_observation_status_does_not_call_errors_success(self) -> None:
         self.assertEqual(

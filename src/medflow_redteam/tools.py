@@ -17,11 +17,12 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .capabilities import select_capabilities_for_services
-from .config_loader import ROOT, load_lab_config
+from .config_loader import ROOT, load_lab_config, load_nmap_profiles_config
 from .generated_tools import execute_generated_tool
 
 
 _LAB_CONFIG = load_lab_config()
+_NMAP_PROFILES = load_nmap_profiles_config()
 LOCAL_TARGETS = set(_LAB_CONFIG["safety"]["allowed_targets"])
 ALLOWED_CIDRS = [ipaddress.ip_network(cidr) for cidr in _LAB_CONFIG["safety"]["allowed_cidrs"]]
 DEFAULT_TARGET = _LAB_CONFIG["safety"]["default_target"]
@@ -154,51 +155,60 @@ def tcp_connect_check(target: str, ports: list[int] | None = None, timeout: floa
     return results
 
 
-def nmap_service_scan(target: str, ports: list[int] | None = None) -> ToolResult:
-    target = validate_target(target)
-    selected_ports = ",".join(str(port) for port in (ports or default_ports_for_target(target)))
-    command = [
-        "nmap",
-        "-sV",
-        "-Pn",
-        "--version-light",
-        "--reason",
-        "-p",
-        selected_ports,
-        target,
-    ]
-    return run_local_command(command, timeout=180)
+def select_nmap_profile(purpose: str, ports: list[int] | None = None) -> str:
+    defaults = _NMAP_PROFILES.get("defaults", {})
+    selection = _NMAP_PROFILES.get("selection", {})
+    if purpose == "service_discovery":
+        threshold = int(selection.get("large_port_threshold") or 1000)
+        if ports and len(ports) > threshold:
+            return defaults.get("service_discovery_large") or defaults.get("service_discovery") or "service_light"
+    return defaults.get(purpose) or purpose
 
 
-def nmap_safe_scripts(target: str, ports: list[int] | None = None) -> ToolResult:
+def nmap_profile_command(
+    target: str,
+    ports: list[int] | None,
+    profile_name: str,
+    variables: dict[str, Any] | None = None,
+) -> tuple[list[str], int]:
     target = validate_target(target)
+    profiles = _NMAP_PROFILES.get("profiles", {})
+    profile = profiles.get(profile_name)
+    if not profile:
+        raise ValueError(f"Nmap profile '{profile_name}' is not defined in config/nmap_profiles.json.")
     selected_ports = ",".join(str(port) for port in (ports or default_ports_for_target(target)))
-    command = [
-        "nmap",
-        "-sV",
-        "-Pn",
-        "--script",
-        "default,safe",
-        "-p",
-        selected_ports,
-        target,
-    ]
-    return run_local_command(command, timeout=240)
+    variables = variables or {}
+    rendered_args = []
+    for arg in profile.get("args", []):
+        rendered = str(arg).format(**variables)
+        rendered_args.append(rendered)
+    command = ["nmap", *rendered_args, "-p", selected_ports, target]
+    return command, int(profile.get("timeout") or 180)
+
+
+def nmap_scan(target: str, ports: list[int] | None = None, profile: str | None = None, variables: dict[str, Any] | None = None) -> ToolResult:
+    profile_name = profile or select_nmap_profile("service_discovery", ports)
+    command, timeout = nmap_profile_command(target, ports, profile_name, variables=variables)
+    return run_local_command(command, timeout=timeout)
+
+
+def nmap_service_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
+    return nmap_scan(target, ports=ports, profile=profile or select_nmap_profile("service_discovery", ports))
+
+
+def nmap_safe_scripts(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
+    return nmap_scan(target, ports=ports, profile=profile or select_nmap_profile("safe_scripts", ports))
 
 
 def nmap_single_script(target: str, script_name: str, port: int) -> ToolResult:
-    target = validate_target(target)
-    command = [
-        "nmap",
-        "-sV",
-        "-Pn",
-        "--script",
-        script_name,
-        "-p",
-        str(port),
+    if not allowed_tool_identifier(script_name):
+        raise ValueError(f"Nmap script name failed validation: {script_name}")
+    return nmap_scan(
         target,
-    ]
-    return run_local_command(command, timeout=90)
+        ports=[port],
+        profile=select_nmap_profile("single_script", [port]),
+        variables={"script_name": script_name},
+    )
 
 
 def http_probe(target: str, ports: list[int] | None = None) -> dict:

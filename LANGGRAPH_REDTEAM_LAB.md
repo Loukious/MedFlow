@@ -5,6 +5,7 @@ This milestone implementation keeps the red-team code separate from the Streamli
 ## What It Builds
 
 - `config/redteam_lab.json` defines lab target safety, scan ports, and Docker lab settings.
+- `config/nmap_profiles.json` defines Nmap scan profiles, arguments, and timeouts.
 - `config/generated_tools/tool_specs.json` defines seed generated-tool metadata and match rules.
 - `config/generated_tools/code/` stores reviewed seed generated Python tools.
 - `data/generated_tools/` stores locally generated cached tools created during experimentation.
@@ -106,6 +107,7 @@ These values are now outside the agent logic:
 - Default target and allowed CIDRs.
 - Docker image, network, subnet, container name, container IP, hostname, published ports, and startup commands.
 - Default scan ports and HTTP probe ports.
+- Nmap scan profiles, script profiles, arguments, and command timeouts.
 - Seed and locally generated Python tool capability entries.
 - Capability match rules: service, ports, and product/version keywords.
 - Tool-specific proof markers, command templates, and evidence collection logic.
@@ -118,6 +120,22 @@ The code still intentionally enforces:
 - External provider execution policy: generated inventory items can be selected/recommended, but execution is still mediated by provider-specific adapters and the lab allowlist.
 - Cleanup verification after exploitation.
 - Safety/reporting boundaries.
+
+## Dynamic Nmap Profiles
+
+Nmap ports were already dynamic through CLI arguments and target defaults. Nmap command profiles are now config-driven too:
+
+```text
+config/nmap_profiles.json
+```
+
+The runner resolves profiles by purpose:
+
+- `service_discovery`: general service/version detection.
+- `safe_scripts`: default/safe NSE validation.
+- `single_script`: one selected NSE script from the capability inventory.
+
+To change scan intensity, timing, script categories, or timeouts, edit `config/nmap_profiles.json` instead of changing `src/medflow_redteam/tools.py`. The Python runner still enforces target allowlists and uses argument-list subprocess execution rather than shell strings.
 
 ## Generated Python Tools
 

@@ -255,6 +255,8 @@ Campaign runs also emit explicit `phases`, a `tool_timeline`, normalized capabil
 python scripts/run_redteam_campaign.py "Assess an unknown authorized lab target and identify viable validation paths" --target 10.129.32.115 --ports 1-1000 --execute-validation --max-capabilities 8 --execution-mode aggressive_lab --no-llm --graph-memory data/graph/medflow_graph.json
 ```
 
+Add `--update-graph --graph-dedup` when you want the new run to be ingested into graph memory immediately. Otherwise the campaign only reads graph memory and writes the campaign report files.
+
 Search graph memory directly without an LLM:
 
 ```bash

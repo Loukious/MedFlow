@@ -120,6 +120,14 @@ Campaign runs now load graph memory after reconnaissance:
 
 The campaign uses graph memory as prior evidence, not as hardcoded target knowledge. It can influence capability scoring when prior campaigns show matching successful or failed validation outcomes.
 
+To also write the new campaign result back into graph memory in the same command, add:
+
+```bash
+--update-graph --graph-dedup
+```
+
+`--graph-memory` chooses the graph file to read from and write to. Without `--update-graph`, the run only saves JSON/Markdown reports.
+
 Saved campaign JSON and Markdown now include:
 
 - `phases`: explicit campaign phase states.

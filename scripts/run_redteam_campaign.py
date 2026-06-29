@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from medflow_graph.memory import GraphStore, ingest_campaign_report
 from medflow_redteam.campaign import CampaignRun, run_campaign, save_campaign_run
 
 
@@ -165,6 +166,8 @@ def main() -> None:
     parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
     parser.add_argument("--results", type=int, default=5, help="Retrieved context results per query.")
     parser.add_argument("--graph-memory", default="data/graph/medflow_graph.json", help="Optional graph-memory JSON path.")
+    parser.add_argument("--update-graph", action="store_true", help="Ingest the saved campaign JSON into graph memory after the run.")
+    parser.add_argument("--graph-dedup", action="store_true", help="Run graph-memory dedup cleanup after --update-graph.")
     parser.add_argument("--loop", action="store_true", help="Run bounded closed-loop validation rounds after the initial pass.")
     parser.add_argument("--max-rounds", type=int, default=3, help="Maximum total validation rounds when --loop is enabled.")
     parser.add_argument("--max-tools", type=int, default=12, help="Maximum total validation tools when --loop is enabled.")
@@ -195,10 +198,25 @@ def main() -> None:
         stop_on_success=not args.no_stop_on_success,
     )
     saved = save_campaign_run(run, Path(args.output_dir))
+    graph_update = None
+    if args.update_graph:
+        graph_path = Path(args.graph_memory)
+        store = GraphStore.load(graph_path)
+        ingest_stats = ingest_campaign_report(store, saved["json"])
+        dedup_stats = store.dream_dedup() if args.graph_dedup else {"merged": 0, "reviews_added": 0}
+        store.save()
+        graph_update = {
+            "path": str(graph_path),
+            "ingest": ingest_stats,
+            "dedup": dedup_stats,
+            "summary": store.summary(),
+        }
 
     if args.json:
         data = asdict(run)
         data["saved"] = {name: str(path) for name, path in saved.items()}
+        if graph_update:
+            data["graph_update"] = graph_update
         print(json.dumps(data, indent=2, default=str))
         return
 
@@ -206,6 +224,10 @@ def main() -> None:
     print_campaign(console, run, show_report=args.report, show_traces=args.traces)
     console.print(f"Saved JSON: [bold]{saved['json']}[/bold]")
     console.print(f"Saved Markdown: [bold]{saved['markdown']}[/bold]")
+    if graph_update:
+        console.print(f"Updated graph: [bold]{graph_update['path']}[/bold]")
+        console.print(f"Graph ingest: {graph_update['ingest']}")
+        console.print(f"Graph dedup: {graph_update['dedup']}")
 
 
 if __name__ == "__main__":

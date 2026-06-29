@@ -35,7 +35,7 @@ The generated Python code must define:
 def run(context: dict) -> dict:
     ...
 
-Allowed imports: json, socket, time, subprocess, ftplib.
+Allowed imports: concurrent, ftplib, html, ipaddress, json, re, shutil, socket, subprocess, time, urllib, xml.
 Return strict JSON with keys:
 spec, code
 

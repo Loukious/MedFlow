@@ -14,7 +14,20 @@ from .config_loader import ROOT, load_lab_config
 
 CONFIG_TOOL_DIR = ROOT / "config" / "generated_tools"
 DATA_TOOL_DIR = ROOT / "data" / "generated_tools"
-ALLOWED_IMPORTS = {"json", "socket", "time", "subprocess", "ftplib"}
+ALLOWED_IMPORTS = {
+    "concurrent",
+    "ftplib",
+    "html",
+    "ipaddress",
+    "json",
+    "re",
+    "shutil",
+    "socket",
+    "subprocess",
+    "time",
+    "urllib",
+    "xml",
+}
 BLOCKED_CALLS = {"eval", "exec", "compile", "input", "open", "__import__"}
 
 
@@ -42,6 +55,20 @@ def load_generated_tool_specs() -> list[dict[str, Any]]:
                 }
             )
     return specs
+
+
+def get_generated_tool_spec(tool_id: str) -> dict[str, Any]:
+    for spec in load_generated_tool_specs():
+        if spec.get("id") == tool_id:
+            return spec
+    raise KeyError(f"Generated tool not found: {tool_id}")
+
+
+def get_generated_tool_spec_by_role(operation_role: str) -> dict[str, Any]:
+    for spec in load_generated_tool_specs():
+        if spec.get("operation_role") == operation_role:
+            return spec
+    raise KeyError(f"Generated tool role not found: {operation_role}")
 
 
 def resolve_generated_tool_code(spec: dict[str, Any]) -> Path:
@@ -156,6 +183,16 @@ def execute_generated_tool(target: str, spec: dict[str, Any], context: dict[str,
     result["elapsed_seconds"] = result.get("elapsed_seconds", round(time.perf_counter() - started, 3))
     result["generated_tool_code"] = str(code_path)
     return result
+
+
+def execute_generated_tool_by_id(tool_id: str, target: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    spec = get_generated_tool_spec(tool_id)
+    return execute_generated_tool(target, spec, context or {})
+
+
+def execute_generated_tool_by_role(operation_role: str, target: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    spec = get_generated_tool_spec_by_role(operation_role)
+    return execute_generated_tool(target, spec, context or {})
 
 
 def save_generated_tool(tool_id: str, spec: dict[str, Any], code: str, overwrite: bool = False) -> dict[str, Path]:

@@ -23,7 +23,11 @@ class CapabilityMatch:
 
 def load_capability_inventory(path: Path | None = None) -> list[dict[str, Any]]:
     inventory_path = path or INVENTORY_PATH
-    capabilities = load_generated_tool_specs()
+    capabilities = [
+        item
+        for item in load_generated_tool_specs()
+        if item.get("tool_kind", "validation_capability") == "validation_capability"
+    ]
     if inventory_path.exists():
         data = json.loads(inventory_path.read_text(encoding="utf-8"))
         capabilities.extend(data.get("capabilities", []))

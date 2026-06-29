@@ -1,28 +1,19 @@
 from __future__ import annotations
 
-import json
 import ipaddress
+import json
 import re
-import shutil
-import socket
-import subprocess
-import time
 import xml.etree.ElementTree as ET
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import asdict, dataclass
-from html.parser import HTMLParser
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
-from urllib.request import Request, urlopen
 
 from .capabilities import select_capabilities_for_services
-from .config_loader import ROOT, load_lab_config, load_nmap_profiles_config
-from .generated_tools import execute_generated_tool
+from .config_loader import load_lab_config
+from .generated_tools import execute_generated_tool, execute_generated_tool_by_role
 
 
 _LAB_CONFIG = load_lab_config()
-_NMAP_PROFILES = load_nmap_profiles_config()
 LOCAL_TARGETS = set(_LAB_CONFIG["safety"]["allowed_targets"])
 ALLOWED_CIDRS = [ipaddress.ip_network(cidr) for cidr in _LAB_CONFIG["safety"]["allowed_cidrs"]]
 DEFAULT_TARGET = _LAB_CONFIG["safety"]["default_target"]
@@ -30,15 +21,6 @@ CONTAINER_PORTS = [int(port) for port in _LAB_CONFIG["scan"]["container_ports"]]
 HOST_PORTS = [int(port) for port in _LAB_CONFIG["scan"]["host_ports"]]
 HTTP_CONTAINER_PORTS = [int(port) for port in _LAB_CONFIG["scan"]["http_container_ports"]]
 HTTP_HOST_PORTS = [int(port) for port in _LAB_CONFIG["scan"]["http_host_ports"]]
-
-
-def default_ports_for_target(target: str) -> list[int]:
-    if target in {"127.0.0.1", "localhost"}:
-        return HOST_PORTS
-    if target == DEFAULT_TARGET:
-        return CONTAINER_PORTS
-    return list(range(1, 1001))
-
 
 @dataclass
 class ToolResult:
@@ -50,40 +32,16 @@ class ToolResult:
     elapsed_seconds: float
 
 
-class TitleParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.in_title = False
-        self.title_parts: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs):
-        if tag.lower() == "title":
-            self.in_title = True
-
-    def handle_endtag(self, tag: str):
-        if tag.lower() == "title":
-            self.in_title = False
-
-    def handle_data(self, data: str):
-        if self.in_title:
-            self.title_parts.append(data.strip())
-
-    @property
-    def title(self) -> str:
-        return " ".join(part for part in self.title_parts if part).strip()
+def default_ports_for_target(target: str) -> list[int]:
+    if target in {"127.0.0.1", "localhost"}:
+        return HOST_PORTS
+    if target == DEFAULT_TARGET:
+        return CONTAINER_PORTS
+    return list(range(1, 1001))
 
 
-class LinkParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.links: list[str] = []
-
-    def handle_starttag(self, tag: str, attrs):
-        if tag.lower() != "a":
-            return
-        for key, value in attrs:
-            if key.lower() == "href" and value:
-                self.links.append(value)
+def default_http_ports_for_target(target: str) -> list[int]:
+    return HTTP_HOST_PORTS if target in {"127.0.0.1", "localhost"} else HTTP_CONTAINER_PORTS
 
 
 def validate_target(target: str) -> str:
@@ -99,255 +57,63 @@ def validate_target(target: str) -> str:
     return target
 
 
-def run_local_command(command: list[str], timeout: int = 120) -> ToolResult:
-    started = time.perf_counter()
-    try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
-    except subprocess.TimeoutExpired as exc:
-        elapsed = time.perf_counter() - started
-        stdout = exc.stdout or ""
-        stderr = exc.stderr or ""
-        if isinstance(stdout, bytes):
-            stdout = stdout.decode("utf-8", errors="replace")
-        if isinstance(stderr, bytes):
-            stderr = stderr.decode("utf-8", errors="replace")
-        return ToolResult(
-            tool=command[0],
-            command=command,
-            returncode=124,
-            stdout=strip_ansi(stdout.strip()),
-            stderr=strip_ansi((stderr.strip() + f"\nTimed out after {timeout} seconds").strip()),
-            elapsed_seconds=elapsed,
-        )
-    elapsed = time.perf_counter() - started
+def run_generated_operation(tool_id: str, target: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
+    target = validate_target(target)
+    return execute_generated_tool_by_role(tool_id, target, context or {})
+
+
+def generated_tool_result_to_tool_result(result: dict[str, Any], fallback_tool: str) -> ToolResult:
+    payload = result.get("tool_result") or {}
     return ToolResult(
-        tool=command[0],
-        command=command,
-        returncode=proc.returncode,
-        stdout=strip_ansi(proc.stdout.strip()),
-        stderr=strip_ansi(proc.stderr.strip()),
-        elapsed_seconds=elapsed,
+        tool=str(payload.get("tool") or fallback_tool),
+        command=payload.get("command"),
+        returncode=int(payload.get("returncode") if payload.get("returncode") is not None else (0 if result.get("verified") else 1)),
+        stdout=str(payload.get("stdout") or result.get("proof_output") or ""),
+        stderr=str(payload.get("stderr") or result.get("reason") or ""),
+        elapsed_seconds=float(payload.get("elapsed_seconds") or result.get("elapsed_seconds") or 0.0),
     )
-
-
-def strip_ansi(value: str) -> str:
-    return re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", value)
 
 
 def tcp_connect_check(target: str, ports: list[int] | None = None, timeout: float = 1.0) -> dict:
-    target = validate_target(target)
     selected_ports = ports or default_ports_for_target(target)
-
-    def check_one(port: int) -> tuple[str, dict[str, Any]]:
-        started = time.perf_counter()
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.settimeout(timeout)
-            code = sock.connect_ex((target, port))
-        return str(port), {"open": code == 0, "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
-
-    results = {}
-    workers = min(128, max(1, len(selected_ports)))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(check_one, port) for port in selected_ports]
-        for future in as_completed(futures):
-            port, result = future.result()
-            results[port] = result
-    return results
+    result = run_generated_operation("tcp_connect_check", target, {"ports": selected_ports, "timeout": timeout})
+    return result.get("tcp", {})
 
 
-def select_nmap_profile(purpose: str, ports: list[int] | None = None) -> str:
-    defaults = _NMAP_PROFILES.get("defaults", {})
-    selection = _NMAP_PROFILES.get("selection", {})
-    if purpose == "service_discovery":
-        threshold = int(selection.get("large_port_threshold") or 1000)
-        if ports and len(ports) > threshold:
-            return defaults.get("service_discovery_large") or defaults.get("service_discovery") or "service_light"
-    return defaults.get(purpose) or purpose
+def service_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
+    selected_ports = ports or default_ports_for_target(target)
+    result = run_generated_operation("service_scan", target, {"ports": selected_ports, "profile": profile or "service_discovery"})
+    return generated_tool_result_to_tool_result(result, "service_scan")
 
 
-def nmap_profile_command(
-    target: str,
-    ports: list[int] | None,
-    profile_name: str,
-    variables: dict[str, Any] | None = None,
-) -> tuple[list[str], int]:
-    target = validate_target(target)
-    profiles = _NMAP_PROFILES.get("profiles", {})
-    profile = profiles.get(profile_name)
-    if not profile:
-        raise ValueError(f"Nmap profile '{profile_name}' is not defined in config/nmap_profiles.json.")
-    selected_ports = ",".join(str(port) for port in (ports or default_ports_for_target(target)))
-    variables = variables or {}
-    rendered_args = []
-    for arg in profile.get("args", []):
-        rendered = str(arg).format(**variables)
-        rendered_args.append(rendered)
-    command = ["nmap", *rendered_args, "-p", selected_ports, target]
-    return command, int(profile.get("timeout") or 180)
-
-
-def nmap_scan(target: str, ports: list[int] | None = None, profile: str | None = None, variables: dict[str, Any] | None = None) -> ToolResult:
-    profile_name = profile or select_nmap_profile("service_discovery", ports)
-    command, timeout = nmap_profile_command(target, ports, profile_name, variables=variables)
-    return run_local_command(command, timeout=timeout)
-
-
-def nmap_service_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
-    return nmap_scan(target, ports=ports, profile=profile or select_nmap_profile("service_discovery", ports))
-
-
-def nmap_safe_scripts(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
-    return nmap_scan(target, ports=ports, profile=profile or select_nmap_profile("safe_scripts", ports))
-
-
-def nmap_single_script(target: str, script_name: str, port: int) -> ToolResult:
-    if not allowed_tool_identifier(script_name):
-        raise ValueError(f"Nmap script name failed validation: {script_name}")
-    return nmap_scan(
-        target,
-        ports=[port],
-        profile=select_nmap_profile("single_script", [port]),
-        variables={"script_name": script_name},
-    )
+def safe_script_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
+    selected_ports = ports or default_ports_for_target(target)
+    result = run_generated_operation("safe_script_scan", target, {"ports": selected_ports, "profile": profile or "safe_scripts"})
+    return generated_tool_result_to_tool_result(result, "safe_script_scan")
 
 
 def http_probe(target: str, ports: list[int] | None = None) -> dict:
-    target = validate_target(target)
-    output = []
-    default_http_ports = HTTP_HOST_PORTS if target in {"127.0.0.1", "localhost"} else HTTP_CONTAINER_PORTS
-    for port in ports or default_http_ports:
-        scheme = "https" if port in {443, 8443} else "http"
-        url = f"{scheme}://{target}:{port}/"
-        started = time.perf_counter()
-        try:
-            request = Request(url, headers={"User-Agent": "MedFlow-RedTeam-Lab/0.1"})
-            with urlopen(request, timeout=4) as response:
-                body = response.read(4096).decode("utf-8", errors="replace")
-                parser = TitleParser()
-                parser.feed(body)
-                output.append(
-                    {
-                        "url": url,
-                        "status": response.status,
-                        "server": response.headers.get("Server", ""),
-                        "title": parser.title,
-                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
-                    }
-                )
-        except URLError as exc:
-            output.append({"url": url, "error": str(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)})
-        except Exception as exc:
-            output.append({"url": url, "error": repr(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)})
-    return {"http_probe": output}
-
-
-COMMON_WEB_PATHS = [
-    "/",
-    "/login",
-    "/logout",
-    "/admin",
-    "/dashboard",
-    "/data",
-    "/data/0",
-    "/data/1",
-    "/download",
-    "/download/0",
-    "/download/1",
-    "/capture",
-    "/captures",
-    "/pcap",
-    "/api",
-    "/api/v1",
-    "/robots.txt",
-]
-
-
-def web_route_discovery(target: str, ports: list[int] | None = None, paths: list[str] | None = None) -> dict:
-    target = validate_target(target)
-    output = []
-    selected_ports = ports or [80, 443, 8080, 8000, 5000, 8443]
-    selected_paths = paths or COMMON_WEB_PATHS
-    seen: set[tuple[int, str]] = set()
-    for port in selected_ports:
-        scheme = "https" if port in {443, 8443} else "http"
-        for path in selected_paths:
-            normalized_path = path if path.startswith("/") else f"/{path}"
-            key = (port, normalized_path)
-            if key in seen:
-                continue
-            seen.add(key)
-            url = f"{scheme}://{target}:{port}{normalized_path}"
-            started = time.perf_counter()
-            try:
-                request = Request(url, headers={"User-Agent": "MedFlow-RedTeam-Lab/0.1"})
-                with urlopen(request, timeout=4) as response:
-                    body = response.read(8192)
-                    text = body.decode("utf-8", errors="replace")
-                    parser = TitleParser()
-                    parser.feed(text)
-                    links = LinkParser()
-                    if "text/html" in response.headers.get("Content-Type", ""):
-                        links.feed(text)
-                    output.append(
-                        {
-                            "url": url,
-                            "status": response.status,
-                            "content_type": response.headers.get("Content-Type", ""),
-                            "content_length": response.headers.get("Content-Length", ""),
-                            "title": parser.title,
-                            "links": sorted(set(links.links))[:20],
-                            "artifact_signal": artifact_signal(url, response.headers.get("Content-Type", ""), body),
-                            "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
-                        }
-                    )
-            except Exception as exc:
-                output.append(
-                    {
-                        "url": url,
-                        "error": str(exc),
-                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
-                    }
-                )
-    return {"web_routes": output}
+    selected_ports = ports or default_http_ports_for_target(target)
+    result = run_generated_operation("http_probe", target, {"ports": selected_ports})
+    return {"http_probe": result.get("http_probe", [])}
 
 
 def web_fingerprint(target: str, ports: list[int] | None = None) -> dict:
-    target = validate_target(target)
     selected_ports = ports or [80, 443, 8080, 8000, 5000, 8443]
-    fingerprints = []
-    for port in selected_ports:
-        scheme = "https" if port in {443, 8443} else "http"
-        url = f"{scheme}://{target}:{port}/"
-        started = time.perf_counter()
-        try:
-            request = Request(url, headers={"User-Agent": "MedFlow-RedTeam-Lab/0.1"})
-            with urlopen(request, timeout=4) as response:
-                body = response.read(8192).decode("utf-8", errors="replace")
-                headers = {key.lower(): value for key, value in response.headers.items()}
-                fingerprints.append(
-                    {
-                        "url": url,
-                        "status": response.status,
-                        "server": headers.get("server", ""),
-                        "powered_by": headers.get("x-powered-by", ""),
-                        "set_cookie_present": bool(headers.get("set-cookie")),
-                        "security_headers": {
-                            "content_security_policy": bool(headers.get("content-security-policy")),
-                            "strict_transport_security": bool(headers.get("strict-transport-security")),
-                            "x_frame_options": bool(headers.get("x-frame-options")),
-                            "x_content_type_options": bool(headers.get("x-content-type-options")),
-                        },
-                        "technology_signals": web_technology_signals(headers, body),
-                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
-                    }
-                )
-        except Exception as exc:
-            fingerprints.append({"url": url, "error": str(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)})
-    return {"web_fingerprints": fingerprints}
+    result = run_generated_operation("web_fingerprint", target, {"ports": selected_ports})
+    return {"web_fingerprints": result.get("web_fingerprints", [])}
+
+
+def web_route_discovery(target: str, ports: list[int] | None = None, paths: list[str] | None = None) -> dict:
+    selected_ports = ports or [80, 443, 8080, 8000, 5000, 8443]
+    context: dict[str, Any] = {"ports": selected_ports}
+    if paths:
+        context["paths"] = paths
+    result = run_generated_operation("web_route_discovery", target, context)
+    return {"web_routes": result.get("web_routes", [])}
 
 
 def web_control_checks(web_routes: dict[str, Any] | None, fingerprints: dict[str, Any] | None) -> dict[str, Any]:
-    """Derive safe web findings from observed routes/fingerprints."""
     findings: list[dict[str, Any]] = []
     for item in (web_routes or {}).get("web_routes", []):
         if item.get("artifact_signal"):
@@ -400,25 +166,6 @@ def web_control_checks(web_routes: dict[str, Any] | None, fingerprints: dict[str
     return {"findings": findings, "count": len(findings)}
 
 
-def web_technology_signals(headers: dict[str, str], body: str) -> list[str]:
-    text = f"{headers.get('server', '')} {headers.get('x-powered-by', '')} {body[:4000]}".lower()
-    signals = []
-    checks = {
-        "gunicorn": "gunicorn",
-        "flask": "flask",
-        "django": "django",
-        "express": "express",
-        "php": "php",
-        "wordpress": "wp-content",
-        "jquery": "jquery",
-        "bootstrap": "bootstrap",
-    }
-    for name, marker in checks.items():
-        if marker in text:
-            signals.append(name)
-    return sorted(set(signals))
-
-
 def parse_zap_json_report(path: str | Path) -> dict[str, Any]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     alerts = []
@@ -463,19 +210,6 @@ def text_or_empty(node: ET.Element, child: str) -> str:
     return "".join(found.itertext()).strip() if found is not None else ""
 
 
-def artifact_signal(url: str, content_type: str, body: bytes) -> str:
-    lowered_url = url.lower()
-    lowered_type = content_type.lower()
-    pcap_magic = {b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x0a\x0d\x0d\x0a"}
-    if any(body.startswith(magic) for magic in pcap_magic) or "pcap" in lowered_url:
-        return "possible packet capture exposure"
-    if "download" in lowered_url and ("octet-stream" in lowered_type or not lowered_type.startswith("text/html")):
-        return "downloadable artifact"
-    if any(term in lowered_url for term in ["backup", "config", "dump", "capture"]):
-        return "sensitive path keyword"
-    return ""
-
-
 def select_exploit_candidate(
     target: str,
     services: list[dict[str, str]],
@@ -483,7 +217,6 @@ def select_exploit_candidate(
     web_routes: dict[str, Any] | None = None,
     graph_memory: dict[str, Any] | None = None,
 ) -> dict:
-    """Select the best capability candidates from observed service evidence."""
     target = validate_target(target)
     return select_capabilities_for_services(
         target,
@@ -500,7 +233,6 @@ def run_selected_exploit(
     use_sudo: bool = False,
     execution_mode: str = "safe",
 ) -> dict:
-    """Execute selected capabilities through registered local runners."""
     selected_candidates = selection.get("selected_candidates") or ([selection.get("selected")] if selection and selection.get("selected") else [])
     if not selected_candidates:
         return {
@@ -540,33 +272,29 @@ def run_one_selected_capability(
 ) -> dict:
     exploit_id = selected.get("id")
     runner = selected.get("runner")
-    if not selected.get("safe_to_execute", False) and not can_execute_aggressive(selected, execution_mode):
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "status": "blocked_by_safety_policy",
-            "reason": f"Capability is metadata-only or not marked safe to execute in {execution_mode} mode.",
-            "selected_exploit_id": exploit_id,
-            "selected_exploit_name": selected.get("name"),
-            "selection_score": selected.get("score"),
-            "selection_reasons": selected.get("reasons", []),
-        }
-    if runner == "generated_python_tool":
-        result = generated_python_tool_validation(target, selected, execution_mode=execution_mode)
-    elif runner == "nmap_nse_script":
-        result = nmap_nse_script_validation(target, selected, execution_mode=execution_mode)
-    elif runner == "metasploit_module":
-        result = metasploit_module_validation(target, selected, execution_mode=execution_mode)
-    elif runner == "nuclei_template":
-        result = nuclei_template_validation(target, selected, execution_mode=execution_mode)
-    else:
+    if runner != "generated_python_tool":
         result = {
             "allowed": False,
             "exploited": False,
             "verified": False,
-            "reason": f"Selected exploit runner '{runner}' is not registered.",
+            "reason": f"Runner '{runner}' is metadata-only until a generated Python tool is cached for it.",
         }
+    elif not generated_tool_allowed_in_mode(selected, execution_mode):
+        result = {
+            "allowed": False,
+            "exploited": False,
+            "verified": False,
+            "reason": f"Generated tool is not allowed in execution mode {execution_mode}.",
+        }
+    else:
+        result = execute_generated_tool(
+            validate_target(target),
+            selected,
+            {
+                "execution_mode": execution_mode,
+                "matched_service": selected.get("matched_service") or {},
+            },
+        )
     result["selected_exploit_id"] = exploit_id
     result["selected_exploit_name"] = selected.get("name")
     result["selection_score"] = selected.get("score")
@@ -578,23 +306,9 @@ def run_one_selected_capability(
     return result
 
 
-def generated_python_tool_validation(target: str, capability: dict, execution_mode: str = "safe") -> dict:
+def generated_tool_allowed_in_mode(capability: dict[str, Any], execution_mode: str) -> bool:
     allowed_modes = capability.get("allowed_execution_modes") or ["safe"]
-    if execution_mode not in allowed_modes:
-        return {
-            "allowed": False,
-            "verified": False,
-            "exploited": False,
-            "reason": f"Generated tool is not allowed in execution mode {execution_mode}. Allowed modes: {', '.join(allowed_modes)}.",
-        }
-    return execute_generated_tool(
-        target,
-        capability,
-        {
-            "execution_mode": execution_mode,
-            "matched_service": capability.get("matched_service") or {},
-        },
-    )
+    return execution_mode in allowed_modes
 
 
 def status_counts(results: list[dict[str, Any]]) -> dict[str, int]:
@@ -613,327 +327,15 @@ def normalize_validation_status(result: dict[str, Any], capability: dict[str, An
     if result.get("exploited"):
         return "confirmed_vulnerability"
     if result.get("verified"):
-        runner = (capability or {}).get("runner") or result.get("runner")
-        if runner == "generated_python_tool":
-            return "confirmed_exposure"
-        return "confirmed_vulnerability" if result.get("metasploit_action") == "check" else "confirmed_exposure"
+        return "confirmed_exposure"
     if result.get("reason"):
         return "ran_no_finding"
     return "not_applicable"
 
 
-def can_execute_aggressive(capability: dict, execution_mode: str) -> bool:
-    if execution_mode != "aggressive_lab":
-        return False
-    runner = capability.get("runner")
-    blocked_terms = {
-        "brute",
-        "cred",
-        "creds",
-        "credential",
-        "credentials",
-        "dump",
-        "hash",
-        "hashdump",
-        "login",
-        "passwd",
-        "password",
-        "persistence",
-        "priv",
-        "privesc",
-        "example",
-        "relay",
-        "dos",
-    }
-    if runner == "metasploit_module":
-        module_path = capability.get("module_path") or ""
-        module_type = capability.get("module_type") or ""
-        lowered = f"{module_path} {capability.get('name', '')}".lower()
-        if has_blocked_token(lowered, blocked_terms):
-            return False
-        return module_type in {"auxiliary", "exploit"} and allowed_tool_identifier(module_path)
-    if runner == "nuclei_template":
-        tags = {item.lower() for item in capability.get("tags", [])}
-        template_path = capability.get("template_path") or ""
-        lowered = f"{template_path} {capability.get('name', '')} {' '.join(tags)}".lower()
-        if has_blocked_token(lowered, blocked_terms):
-            return False
-        return allowed_tool_identifier(template_path.replace("/", "_").replace(".", "_"))
-    if runner != "nmap_nse_script":
-        return False
-    script_name = (capability.get("script_name") or "").lower()
-    categories = {item.lower() for item in capability.get("categories", [])}
-    blocked_name_terms = blocked_terms
-    blocked_categories = {"brute", "dos"}
-    if any(term in script_name for term in blocked_name_terms):
-        return False
-    return bool({"vuln", "exploit", "intrusive", "malware", "safe", "default"} & categories) and not (categories & blocked_categories)
-
-
-def allowed_tool_identifier(value: str) -> bool:
-    return bool(value) and bool(re.fullmatch(r"[A-Za-z0-9_./:-]+", value)) and ".." not in value
-
-
-def has_blocked_token(text: str, blocked_terms: set[str]) -> bool:
-    tokens = set(re.split(r"[^a-z0-9]+", text.lower()))
-    return bool(tokens & blocked_terms)
-
-
-def selected_port(capability: dict) -> int | None:
-    service = capability.get("matched_service", {})
-    port = service.get("port") or first_configured_port(capability)
-    return int(port) if str(port).isdigit() else None
-
-
-def nmap_nse_script_validation(target: str, capability: dict, execution_mode: str = "safe") -> dict:
-    categories = {item.lower() for item in capability.get("categories", [])}
-    script_name = capability.get("script_name") or ""
-    unsafe_name_terms = {"brute", "dump", "hash", "pass", "passwd", "password", "dos"}
-    if any(term in script_name.lower() for term in unsafe_name_terms):
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Nmap NSE script name indicates brute force, credential, hash, password, or DoS behavior.",
-        }
-    if {"brute", "dos"} & categories:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Nmap NSE script category is not allowed for automatic execution.",
-        }
-    if execution_mode == "safe" and not ({"safe", "default"} & categories):
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Nmap NSE script is not in safe/default categories.",
-        }
-    if execution_mode == "aggressive_lab" and not can_execute_aggressive(capability, execution_mode) and not ({"safe", "default"} & categories):
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Nmap NSE script is not allowed by aggressive lab policy.",
-        }
-    service = capability.get("matched_service", {})
-    port = service.get("port") or first_configured_port(capability)
-    if not script_name or not port:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Nmap NSE capability is missing script name or matched port.",
-        }
-    result = nmap_single_script(target, script_name, int(port))
-    requires_vuln_evidence = bool({"vuln", "exploit", "intrusive", "malware"} & categories)
-    vulnerable_evidence = nmap_script_reported_vulnerable(result.stdout)
-    verified = result.returncode == 0 and (vulnerable_evidence if requires_vuln_evidence else True)
-    if result.returncode != 0:
-        reason = result.stderr[:1000] or "Nmap script execution failed."
-    elif requires_vuln_evidence and not vulnerable_evidence:
-        reason = "Nmap script completed, but did not report vulnerable evidence."
-    else:
-        reason = ""
-    return {
-        "allowed": True,
-        "exploited": False,
-        "verified": verified,
-        "cleanup_verified": True,
-        "target": target,
-        "service": service.get("service", ""),
-        "port": int(port),
-        "proof_goal": f"Run Nmap NSE validation for {script_name}.",
-        "proof_output": result.stdout[:1000] if verified or not requires_vuln_evidence else "",
-        "stderr": result.stderr[:1000],
-        "reason": reason,
-        "elapsed_seconds": result.elapsed_seconds,
-    }
-
-
-def nmap_script_reported_vulnerable(stdout: str) -> bool:
-    lowered = stdout.lower()
-    evidence_terms = {
-        "state: vulnerable",
-        "state: likely vulnerable",
-        "vulnerable:",
-        "is vulnerable",
-        "appears to be vulnerable",
-        "has been backdoored",
-        "backdoored",
-        "exploit results",
-        "cve-",
-    }
-    return any(term in lowered for term in evidence_terms)
-
-
-def metasploit_module_validation(target: str, capability: dict, execution_mode: str = "safe") -> dict:
-    target = validate_target(target)
-    msfconsole = shutil.which("msfconsole")
-    if not msfconsole:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "msfconsole binary not found. Install Metasploit Framework to execute this capability.",
-        }
-    module_path = capability.get("module_path") or ""
-    if not allowed_tool_identifier(module_path):
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Metasploit module path failed validation.",
-        }
-    module_type = capability.get("module_type") or module_path.split("/", 1)[0]
-    port = selected_port(capability)
-    if port is None:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Metasploit capability is missing a matched or configured RPORT.",
-        }
-    action = "run" if module_type == "auxiliary" else "check"
-    if module_type == "exploit" and execution_mode != "aggressive_lab":
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Metasploit exploit modules are limited to check-mode in aggressive_lab execution mode.",
-        }
-    commands = [
-        f"use {module_path}",
-        f"set RHOSTS {target}",
-        f"set RHOST {target}",
-        f"set RPORT {port}",
-        "set VERBOSE false",
-        "setg ConnectTimeout 5",
-        action,
-        "exit -y",
-    ]
-    result = run_local_command([msfconsole, "-q", "-x", "; ".join(commands)], timeout=240)
-    verified = metasploit_output_verified(result.stdout, module_type, action) and result.returncode == 0
-    reason = ""
-    if result.returncode != 0:
-        reason = result.stderr[:1000] or "Metasploit execution failed."
-    elif not verified:
-        reason = "Metasploit module completed, but did not produce positive validation evidence."
-    return {
-        "allowed": True,
-        "exploited": False,
-        "verified": verified,
-        "cleanup_verified": True,
-        "target": target,
-        "service": (capability.get("matched_service") or {}).get("service", ""),
-        "port": port,
-        "proof_goal": f"Run Metasploit {module_path} with action {action}.",
-        "proof_output": result.stdout[:1500] if verified else "",
-        "stderr": result.stderr[:1000],
-        "reason": reason,
-        "elapsed_seconds": result.elapsed_seconds,
-        "metasploit_action": action,
-    }
-
-
-def metasploit_output_verified(stdout: str, module_type: str, action: str) -> bool:
-    lowered = stdout.lower()
-    if "failed to load module" in lowered or "unknown command" in lowered:
-        return False
-    if action == "check":
-        return any(
-            term in lowered
-            for term in [
-                "appears to be vulnerable",
-                "the target is vulnerable",
-                "check appears",
-                "is vulnerable",
-                "vulnerable",
-            ]
-        )
-    if module_type == "auxiliary":
-        negative_terms = ["auxiliary failed", "run failed", "failed:"]
-        return not any(term in lowered for term in negative_terms) and bool(stdout.strip())
-    return False
-
-
-def nuclei_template_validation(target: str, capability: dict, execution_mode: str = "safe") -> dict:
-    target = validate_target(target)
-    nuclei = shutil.which("nuclei")
-    if not nuclei:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "nuclei binary not found. Install ProjectDiscovery Nuclei to execute this capability.",
-        }
-    template_root = ROOT / "data" / "capability_sources" / "nuclei-templates"
-    template_path = capability.get("template_path") or ""
-    if not allowed_tool_identifier(template_path.replace("/", "_").replace(".", "_")):
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Nuclei template path failed validation.",
-        }
-    resolved_template = (template_root / template_path).resolve()
-    if not str(resolved_template).startswith(str(template_root.resolve())) or not resolved_template.exists():
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Nuclei template file is missing or outside the local template repository.",
-        }
-    port = selected_port(capability)
-    scheme = "https" if port in {443, 8443} else "http"
-    url = f"{scheme}://{target}:{port}/" if port else f"http://{target}/"
-    result = run_local_command(
-        [
-            nuclei,
-            "-u",
-            url,
-            "-t",
-            str(resolved_template),
-            "-jsonl",
-            "-silent",
-            "-no-color",
-            "-duc",
-        ],
-        timeout=180,
-    )
-    verified = result.returncode == 0 and bool(result.stdout.strip())
-    if result.returncode != 0:
-        reason = result.stderr[:1000] or "Nuclei execution failed."
-    elif not verified:
-        reason = "Nuclei template completed, but produced no findings."
-    else:
-        reason = ""
-    return {
-        "allowed": True,
-        "exploited": False,
-        "verified": verified,
-        "cleanup_verified": True,
-        "target": target,
-        "service": (capability.get("matched_service") or {}).get("service", ""),
-        "port": port,
-        "proof_goal": f"Run Nuclei template {template_path}.",
-        "proof_output": result.stdout[:1500] if verified else "",
-        "stderr": result.stderr[:1000],
-        "reason": reason,
-        "elapsed_seconds": result.elapsed_seconds,
-        "nuclei_url": url,
-    }
-
-
-def first_configured_port(exploit: dict) -> int | None:
-    ports = exploit.get("match", {}).get("ports") or []
-    return int(ports[0]) if ports else None
-
-
-def parse_nmap_open_services(nmap_output: str) -> list[dict[str, str]]:
+def parse_open_services(scan_output: str) -> list[dict[str, str]]:
     services = []
-    for line in nmap_output.splitlines():
+    for line in scan_output.splitlines():
         match = re.match(r"^(\d+)/(tcp|udp)\s+open\s+(\S+)\s*(.*)$", line.strip())
         if match:
             services.append(
@@ -948,9 +350,14 @@ def parse_nmap_open_services(nmap_output: str) -> list[dict[str, str]]:
 
 
 def summarize_tool_result(result: ToolResult, max_chars: int = 3000) -> str:
-    data = asdict(result)
-    if len(data["stdout"]) > max_chars:
-        data["stdout"] = data["stdout"][:max_chars].rstrip() + "\n[truncated]"
-    if len(data["stderr"]) > 1000:
-        data["stderr"] = data["stderr"][:1000].rstrip() + "\n[truncated]"
-    return json.dumps(data, indent=2)
+    return json.dumps(
+        {
+            "tool": result.tool,
+            "command": result.command,
+            "returncode": result.returncode,
+            "stdout": result.stdout[:max_chars],
+            "stderr": result.stderr[:max_chars],
+            "elapsed_seconds": round(result.elapsed_seconds, 3),
+        },
+        indent=2,
+    )

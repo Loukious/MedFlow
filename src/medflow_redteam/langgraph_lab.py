@@ -16,9 +16,9 @@ from .tools import (
     default_ports_for_target,
     DEFAULT_TARGET,
     http_probe,
-    nmap_safe_scripts,
-    nmap_service_scan,
-    parse_nmap_open_services,
+    safe_script_scan,
+    service_scan,
+    parse_open_services,
     run_selected_exploit,
     select_exploit_candidate,
     summarize_tool_result,
@@ -234,29 +234,29 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
         }
 
     def recon_nmap(state: LabState) -> LabState:
-        result = nmap_service_scan(state["target"], ports=state["ports"])
-        services = parse_nmap_open_services(result.stdout)
+        result = service_scan(state["target"], ports=state["ports"])
+        services = parse_open_services(result.stdout)
         return {
             "nmap_result": result,
             "services": services,
-            "steps": append_step(state, f"ran nmap service discovery and parsed {len(services)} open services"),
+            "steps": append_step(state, f"ran generated service discovery and parsed {len(services)} open services"),
             "tool_traces": [
                 *state.get("tool_traces", []),
-                make_trace("nmap_service_scan", " ".join(result.command or []), summarize_tool_result(result)),
+                make_trace("service_scan", " ".join(result.command or []), summarize_tool_result(result)),
             ],
         }
 
     def validate_safe_scripts(state: LabState) -> LabState:
         if not state.get("run_safe_scripts", True):
-            return {"steps": append_step(state, "skipped nmap default/safe script validation")}
+            return {"steps": append_step(state, "skipped generated safe script validation")}
         open_ports = [int(service["port"]) for service in state.get("services", []) if service.get("port", "").isdigit()]
-        result = nmap_safe_scripts(state["target"], ports=open_ports or state["ports"])
+        result = safe_script_scan(state["target"], ports=open_ports or state["ports"])
         return {
             "safe_script_result": result,
-            "steps": append_step(state, f"ran nmap default,safe scripts against {len(open_ports) or len(state['ports'])} lab ports"),
+            "steps": append_step(state, f"ran generated safe script scan against {len(open_ports) or len(state['ports'])} lab ports"),
             "tool_traces": [
                 *state.get("tool_traces", []),
-                make_trace("nmap_safe_scripts", " ".join(result.command or []), summarize_tool_result(result)),
+                make_trace("safe_script_scan", " ".join(result.command or []), summarize_tool_result(result)),
             ],
         }
 

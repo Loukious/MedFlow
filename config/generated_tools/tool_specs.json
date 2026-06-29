@@ -9,6 +9,7 @@
       "code_path": "code/unrealircd_controlled_proof.py",
       "risk": "lab-only controlled exploitation",
       "safe_to_execute": true,
+      "tool_kind": "validation_capability",
       "generated_by": "seeded_toolsmith_cache",
       "allowed_execution_modes": ["aggressive_lab"],
       "match": {
@@ -27,6 +28,7 @@
       "code_path": "code/ftp_anonymous_access.py",
       "risk": "safe exposure validation",
       "safe_to_execute": true,
+      "tool_kind": "validation_capability",
       "generated_by": "seeded_toolsmith_cache",
       "allowed_execution_modes": ["safe", "aggressive_lab"],
       "match": {
@@ -44,6 +46,7 @@
       "code_path": "code/mysql_handshake_exposure.py",
       "risk": "safe exposure validation",
       "safe_to_execute": true,
+      "tool_kind": "validation_capability",
       "generated_by": "seeded_toolsmith_cache",
       "allowed_execution_modes": ["safe", "aggressive_lab"],
       "match": {
@@ -52,6 +55,120 @@
         "product_keywords": ["mysql"]
       },
       "proof_goal": "Confirm the MySQL service exposes an unauthenticated handshake banner."
+    },
+    {
+      "id": "generated:operation_tcp_connect_check",
+      "name": "TCP connectivity check",
+      "description": "Generated Python operational tool for allowlisted TCP connectivity checks.",
+      "provider": "generated_python",
+      "code_path": "code/operation_tcp_connect_check.py",
+      "risk": "safe observation",
+      "safe_to_execute": true,
+      "tool_kind": "operational_tool",
+      "operation_role": "tcp_connect_check",
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "tcp",
+        "ports": [],
+        "product_keywords": ["tcp"]
+      },
+      "proof_goal": "Check whether configured TCP ports accept connections."
+    },
+    {
+      "id": "generated:operation_nmap_service_scan",
+      "name": "Nmap service discovery",
+      "description": "Generated Python operational tool for Nmap service/version discovery.",
+      "provider": "generated_python",
+      "code_path": "code/operation_nmap_service_scan.py",
+      "risk": "safe observation",
+      "safe_to_execute": true,
+      "tool_kind": "operational_tool",
+      "operation_role": "service_scan",
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "nmap",
+        "ports": [],
+        "product_keywords": ["nmap", "service discovery"]
+      },
+      "proof_goal": "Run configured Nmap service discovery against allowlisted target ports."
+    },
+    {
+      "id": "generated:operation_nmap_safe_scripts",
+      "name": "Nmap default/safe scripts",
+      "description": "Generated Python operational tool for Nmap default/safe NSE script validation.",
+      "provider": "generated_python",
+      "code_path": "code/operation_nmap_safe_scripts.py",
+      "risk": "safe observation",
+      "safe_to_execute": true,
+      "tool_kind": "operational_tool",
+      "operation_role": "safe_script_scan",
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "nmap",
+        "ports": [],
+        "product_keywords": ["nmap", "nse", "safe"]
+      },
+      "proof_goal": "Run Nmap default/safe scripts against allowlisted target ports."
+    },
+    {
+      "id": "generated:operation_http_probe",
+      "name": "HTTP probe",
+      "description": "Generated Python operational tool for lightweight HTTP status/header/title probing.",
+      "provider": "generated_python",
+      "code_path": "code/operation_http_probe.py",
+      "risk": "safe observation",
+      "safe_to_execute": true,
+      "tool_kind": "operational_tool",
+      "operation_role": "http_probe",
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "http",
+        "ports": ["80", "443", "8080", "8443"],
+        "product_keywords": ["http", "https"]
+      },
+      "proof_goal": "Collect HTTP status, Server header, and page title."
+    },
+    {
+      "id": "generated:operation_web_fingerprint",
+      "name": "Web fingerprint",
+      "description": "Generated Python operational tool for lightweight web header/body fingerprinting.",
+      "provider": "generated_python",
+      "code_path": "code/operation_web_fingerprint.py",
+      "risk": "safe observation",
+      "safe_to_execute": true,
+      "tool_kind": "operational_tool",
+      "operation_role": "web_fingerprint",
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "http",
+        "ports": ["80", "443", "8080", "8443"],
+        "product_keywords": ["http", "web", "fingerprint"]
+      },
+      "proof_goal": "Collect safe web technology and security-header signals."
+    },
+    {
+      "id": "generated:operation_web_route_discovery",
+      "name": "Web route discovery",
+      "description": "Generated Python operational tool for configured web path observation.",
+      "provider": "generated_python",
+      "code_path": "code/operation_web_route_discovery.py",
+      "risk": "safe observation",
+      "safe_to_execute": true,
+      "tool_kind": "operational_tool",
+      "operation_role": "web_route_discovery",
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "http",
+        "ports": ["80", "443", "8080", "8443"],
+        "product_keywords": ["http", "route", "web"]
+      },
+      "proof_goal": "Request configured web paths and record safe response metadata."
     }
   ]
 }

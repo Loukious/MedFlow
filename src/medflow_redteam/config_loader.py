@@ -17,8 +17,3 @@ def _read_json(path: Path) -> dict[str, Any]:
 @lru_cache(maxsize=1)
 def load_lab_config() -> dict[str, Any]:
     return _read_json(CONFIG_DIR / "redteam_lab.json")
-
-
-@lru_cache(maxsize=1)
-def load_nmap_profiles_config() -> dict[str, Any]:
-    return _read_json(CONFIG_DIR / "nmap_profiles.json")

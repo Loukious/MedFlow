@@ -259,7 +259,7 @@ Observed services:
 {compact_services(state.get("services", []))}
 
 Prior agent outputs:
-{json.dumps(state.get("agents", []), indent=2)}
+{json.dumps(compact_agents_for_prompt(state.get("agents", [])), indent=2)}
 
 Retrieved evidence, compact:
 {json.dumps([{
@@ -322,6 +322,109 @@ def scalarize(value: Any, fallback: Any = "") -> str:
     if value is None:
         return str(fallback)
     return str(value)
+
+
+def truncate_value(value: Any, max_chars: int = 900) -> Any:
+    if isinstance(value, str):
+        return value if len(value) <= max_chars else value[:max_chars].rstrip() + "...[truncated]"
+    if isinstance(value, list):
+        return [truncate_value(item, max_chars=max_chars) for item in value[:8]]
+    if isinstance(value, dict):
+        return {key: truncate_value(item, max_chars=max_chars) for key, item in list(value.items())[:12]}
+    return value
+
+
+def compact_agents_for_prompt(agents: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    compacted = []
+    for agent in agents[-6:]:
+        evidence = agent.get("evidence") or {}
+        compacted.append(
+            {
+                "role": agent.get("role"),
+                "objective": agent.get("objective"),
+                "tools": agent.get("tools", [])[:8],
+                "decisions": agent.get("decisions", [])[:6],
+                "outputs": agent.get("outputs", [])[:6],
+                "handoff": truncate_value(agent.get("handoff", ""), 600),
+                "evidence_summary": summarize_evidence_for_prompt(evidence),
+            }
+        )
+    return compacted
+
+
+def summarize_evidence_for_prompt(evidence: dict[str, Any]) -> dict[str, Any]:
+    services = evidence.get("services") or []
+    tcp = evidence.get("tcp") or {}
+    routes = (evidence.get("web_routes") or {}).get("web_routes") or []
+    http = (evidence.get("http") or {}).get("http_probe") or []
+    fingerprints = (evidence.get("web_fingerprint") or {}).get("web_fingerprints") or []
+    return {
+        "service_count": len(services),
+        "services": services[:10],
+        "open_tcp_ports": [port for port, result in list(tcp.items()) if isinstance(result, dict) and result.get("open")][:30],
+        "http_successes": [item for item in http if item.get("status")][:8],
+        "route_successes": [item for item in routes if item.get("status")][:10],
+        "artifact_signals": [item for item in routes if item.get("artifact_signal")][:10],
+        "web_fingerprints": [item for item in fingerprints if item.get("status")][:6],
+    }
+
+
+def compact_reporting_draft(state: CampaignState) -> dict[str, Any]:
+    validation = state.get("capability_validation") or {}
+    selection = state.get("capability_selection") or {}
+    routes = (state.get("web_routes") or {}).get("web_routes") or []
+    fingerprints = (state.get("web_fingerprint") or {}).get("web_fingerprints") or []
+    timeline = state.get("tool_timeline", [])
+    graph_hits = (state.get("graph_memory") or {}).get("hits") or []
+    return {
+        "goal": state["goal"],
+        "target": state.get("target"),
+        "services": state.get("services", [])[:20],
+        "web_routes_observed": [item for item in routes if item.get("status")][:12],
+        "web_artifact_signals": [item for item in routes if item.get("artifact_signal")][:12],
+        "web_fingerprints": [item for item in fingerprints if item.get("status")][:8],
+        "web_checks": truncate_value(state.get("web_checks", {}), 700),
+        "graph_memory_hits": [
+            {
+                "type": hit.get("type"),
+                "name": hit.get("name"),
+                "score": hit.get("score"),
+            }
+            for hit in graph_hits[:10]
+        ],
+        "selected_capabilities": [
+            {
+                "id": item.get("id"),
+                "score": item.get("score"),
+                "why": truncate_value(item.get("score_explanation", ""), 220),
+            }
+            for item in selection.get("selected_candidates", [])[:8]
+        ],
+        "validation_summary": {
+            "attempted": validation.get("attempted", 0),
+            "successful": validation.get("successful", 0),
+            "status_counts": validation.get("status_counts", {}),
+            "results": [
+                {
+                    "id": item.get("selected_exploit_id"),
+                    "status": item.get("status"),
+                    "verified": item.get("verified"),
+                    "evidence": truncate_value(item.get("proof_output") or item.get("reason") or "", 260),
+                }
+                for item in validation.get("results", [])[:10]
+            ],
+        },
+        "normalized_evidence": truncate_value(state.get("normalized_evidence", []), 350),
+        "tool_timeline": [
+            {
+                "tool": item.get("tool"),
+                "status": item.get("status"),
+                "evidence": truncate_value(item.get("evidence", ""), 180),
+            }
+            for item in timeline[-15:]
+        ],
+        "agents": compact_agents_for_prompt(state.get("agents", [])),
+    }
 
 
 def build_campaign_graph(
@@ -682,20 +785,7 @@ that blockchain testing is not applicable for this campaign and list only monito
         }
 
     def reporting_agent(state: CampaignState) -> CampaignState:
-        draft = {
-            "goal": state["goal"],
-            "target": state.get("target"),
-            "agents": state.get("agents", []),
-            "services": state.get("services", []),
-            "web_fingerprint": state.get("web_fingerprint", {}),
-            "web_routes": state.get("web_routes", {}),
-            "web_checks": state.get("web_checks", {}),
-            "graph_memory": state.get("graph_memory", {}),
-            "capability_selection": state.get("capability_selection", {}),
-            "capability_validation": state.get("capability_validation", {}),
-            "tool_timeline": state.get("tool_timeline", []),
-            "normalized_evidence": state.get("normalized_evidence", []),
-        }
+        draft = compact_reporting_draft(state)
         safety_review = safety_review_tool(json.dumps(draft, indent=2))
         prompt = f"""
 You are the Reporting Agent for a MedFlow multi-agent red-team campaign.

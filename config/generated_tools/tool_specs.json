@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "id": "generated:unrealircd_3281_rce",
+      "name": "UnrealIRCd 3.2.8.1 controlled command-execution proof",
+      "description": "Generated Python validation tool for the authorized Metasploitable lab UnrealIRCd backdoor proof.",
+      "provider": "generated_python",
+      "code_path": "code/unrealircd_controlled_proof.py",
+      "risk": "lab-only controlled exploitation",
+      "safe_to_execute": true,
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["aggressive_lab"],
+      "match": {
+        "service": "irc",
+        "ports": ["6667"],
+        "product_keywords": ["unrealircd", "irc"]
+      },
+      "proof_goal": "Create a temporary proof file containing the output of `id` through the IRC service.",
+      "proof_command": "id > {marker}"
+    },
+    {
+      "id": "generated:ftp_anonymous_access",
+      "name": "FTP anonymous access validation",
+      "description": "Generated Python validation tool for anonymous FTP exposure.",
+      "provider": "generated_python",
+      "code_path": "code/ftp_anonymous_access.py",
+      "risk": "safe exposure validation",
+      "safe_to_execute": true,
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "ftp",
+        "ports": ["21"],
+        "product_keywords": ["ftp", "proftpd"]
+      },
+      "proof_goal": "Attempt anonymous FTP login and record whether anonymous access is exposed."
+    },
+    {
+      "id": "generated:mysql_handshake_exposure",
+      "name": "MySQL unauthenticated handshake exposure validation",
+      "description": "Generated Python validation tool for unauthenticated MySQL handshake exposure.",
+      "provider": "generated_python",
+      "code_path": "code/mysql_handshake_exposure.py",
+      "risk": "safe exposure validation",
+      "safe_to_execute": true,
+      "generated_by": "seeded_toolsmith_cache",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "mysql",
+        "ports": ["3306"],
+        "product_keywords": ["mysql"]
+      },
+      "proof_goal": "Confirm the MySQL service exposes an unauthenticated handshake banner."
+    }
+  ]
+}

@@ -12,7 +12,7 @@ The graph ingests JSON reports from `scripts/run_redteam_campaign.py` and conver
 - `Route`: discovered HTTP routes and status metadata.
 - `Artifact`: exposed downloadable or sensitive web artifacts flagged by route discovery.
 - `Finding`: review-worthy findings derived from evidence, such as possible packet capture exposure.
-- `Capability`: validation modules selected from internal checks, Nmap NSE, Nuclei, or Metasploit metadata.
+- `Capability`: validation modules selected from generated Python tools, Nmap NSE, Nuclei, or Metasploit metadata.
 - `Evidence`: proof or failure text produced by capability validation.
 - `AgentRole`: the LangGraph role outputs used during the campaign.
 - `KnowledgeSource`: retrieved ATT&CK / MedFlow context items used by the campaign.
@@ -176,6 +176,38 @@ MedFlow can normalize exported web scanner reports without launching a scanner:
 ```
 
 These adapters are intentionally import-focused so the campaign can consume authorized evidence without turning the agent into an uncontrolled web scanner.
+
+## Generated Tool Cache
+
+MedFlow can rank and execute cached generated Python tools through the `generated_python_tool` runner.
+
+Seeded generated tools are stored here:
+
+```text
+config/generated_tools/tool_specs.json
+config/generated_tools/code/
+```
+
+Runtime-generated tools are stored here:
+
+```text
+data/generated_tools/tool_specs.json
+data/generated_tools/code/
+```
+
+Create a deterministic safe observation tool:
+
+```bash
+.venv/bin/python scripts/create_generated_tool.py --id redis_banner --template tcp_banner --service redis --port 6379
+```
+
+Create an LLM-generated tool and cache it only if it passes static validation:
+
+```bash
+.venv/bin/python scripts/create_generated_tool.py --id custom_observer --provider llama --prompt "Create a safe TCP banner observation tool for an allowlisted lab service."
+```
+
+Generated tools must define `run(context: dict) -> dict`. The current static validator requires approved imports and blocks risky constructs such as `eval`, `exec`, `open`, and unsafe subprocess APIs.
 
 ## Identity Imports
 

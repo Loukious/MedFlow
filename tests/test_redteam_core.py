@@ -7,7 +7,8 @@ from pathlib import Path
 
 from medflow_graph.memory import GraphStore
 from medflow_redteam.campaign import http_ports_from_services, observation_status
-from medflow_redteam.capabilities import capability_match_score
+from medflow_redteam.capabilities import capability_match_score, select_capabilities_for_services
+from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_generated_tool_code, validate_generated_tool_code
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.tools import normalize_validation_status, web_control_checks
 
@@ -19,7 +20,7 @@ class RedTeamCoreTests(unittest.TestCase):
             "blocked_by_safety_policy",
         )
         self.assertEqual(
-            normalize_validation_status({"allowed": True, "verified": True}, {"runner": "ftp_anonymous_login"}),
+            normalize_validation_status({"allowed": True, "verified": True}, {"runner": "generated_python_tool"}),
             "confirmed_exposure",
         )
         self.assertEqual(
@@ -83,6 +84,20 @@ class RedTeamCoreTests(unittest.TestCase):
             {"web_fingerprints": [{"url": "http://lab/", "security_headers": {"content_security_policy": False}}]},
         )
         self.assertGreaterEqual(result["count"], 2)
+
+    def test_generated_tool_specs_are_valid_and_ranked(self) -> None:
+        specs = load_generated_tool_specs()
+        self.assertTrue(any(item["id"] == "generated:unrealircd_3281_rce" for item in specs))
+        for item in specs:
+            validation = validate_generated_tool_code(resolve_generated_tool_code(item))
+            self.assertTrue(validation.ok, validation.errors)
+        selected = select_capabilities_for_services(
+            "172.29.10.10",
+            [{"port": "6667", "service": "irc", "version": "UnrealIRCd"}],
+            limit=1,
+        )
+        self.assertEqual(selected["selected_candidates"][0]["id"], "generated:unrealircd_3281_rce")
+        self.assertEqual(selected["selected_candidates"][0]["runner"], "generated_python_tool")
 
     def test_observation_status_does_not_call_errors_success(self) -> None:
         self.assertEqual(

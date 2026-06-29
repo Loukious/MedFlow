@@ -5,8 +5,10 @@ This milestone implementation keeps the red-team code separate from the Streamli
 ## What It Builds
 
 - `config/redteam_lab.json` defines lab target safety, scan ports, and Docker lab settings.
-- `config/internal_capabilities.json` defines optional local validation runners, match rules, proof command, and proof marker.
-- `scripts/build_capability_inventory.py` builds a provider-backed capability inventory from Metasploit metadata, Nuclei templates, local Nmap NSE scripts, and internal validations.
+- `config/generated_tools/tool_specs.json` defines seed generated-tool metadata and match rules.
+- `config/generated_tools/code/` stores reviewed seed generated Python tools.
+- `data/generated_tools/` stores locally generated cached tools created during experimentation.
+- `scripts/build_capability_inventory.py` builds a provider-backed capability inventory from Metasploit metadata, Nuclei templates, and local Nmap NSE scripts.
 - `data/capabilities/capability_inventory.json` stores the generated capability inventory.
 - `src/medflow_redteam/docker_lab.py` manages the Docker lab.
 - `src/medflow_redteam/tools.py` contains the safe local tools used by the agent graph.
@@ -38,7 +40,7 @@ The LangGraph lab workflow runs these nodes in order:
 2. `recon_nmap`: runs safe service discovery with `nmap -sV -Pn --version-light`.
 3. `validate_safe_scripts`: optionally runs Nmap `default,safe` scripts against open ports only.
 4. `probe_http`: checks HTTP-like ports for status, headers, and titles.
-5. `select_exploit_tool`: uses observed service evidence to choose matching capabilities from the generated inventory plus internal validations.
+5. `select_exploit_tool`: uses observed service evidence to choose matching capabilities from the generated inventory plus generated-tool cache.
 6. `controlled_exploitation`: optionally executes the selected exploit tool.
 7. `retrieve_attack_context`: searches the MedFlow/ATT&CK vector knowledge bases.
 8. `safety_gate`: checks the planned content against the project safety boundary.
@@ -72,16 +74,16 @@ The role agents share retrieved ATT&CK/MedFlow context and prior agent outputs. 
 
 The exploitation phase is opt-in. The graph first chooses from the generated capability inventory using tool output. The current inventory sources are:
 
-- Internal validation scripts from `config/internal_capabilities.json`.
+- Generated Python tools from `config/generated_tools/` and `data/generated_tools/`.
 - Metasploit module metadata from `data/capability_sources/metasploit-framework`.
 - Nuclei template metadata from `data/capability_sources/nuclei-templates`.
 - Local Nmap NSE script metadata from `/usr/share/nmap/scripts`.
 
-The current internal capabilities are:
+The current seed generated tools are:
 
-- `unrealircd_3281_rce`: selected when the scan evidence matches IRC/UnrealIRCd on port `6667`.
-- `ftp_anonymous_access`: selected when FTP is exposed and validates whether anonymous access is enabled.
-- `mysql_handshake_exposure`: selected when MySQL is exposed and validates unauthenticated handshake exposure.
+- `generated:unrealircd_3281_rce`: selected when the scan evidence matches IRC/UnrealIRCd on port `6667`.
+- `generated:ftp_anonymous_access`: selected when FTP is exposed and validates whether anonymous access is enabled.
+- `generated:mysql_handshake_exposure`: selected when MySQL is exposed and validates unauthenticated handshake exposure.
 
 That means the action is not selected by a hidden hardcoded `if` in the execution step. LangGraph runs a selection node, records the matching reasons, and then passes the selected capabilities to the execution node. Automatic execution is limited to capabilities that pass the runtime safety filter and have a registered adapter.
 
@@ -104,9 +106,9 @@ These values are now outside the agent logic:
 - Default target and allowed CIDRs.
 - Docker image, network, subnet, container name, container IP, hostname, published ports, and startup commands.
 - Default scan ports and HTTP probe ports.
-- Internal capability entries.
+- Seed and locally generated Python tool capability entries.
 - Capability match rules: service, ports, and product/version keywords.
-- Proof marker path and proof command.
+- Tool-specific proof markers, command templates, and evidence collection logic.
 - Provider-backed capability metadata from Metasploit, Nuclei, and Nmap NSE.
 
 The code still intentionally enforces:
@@ -116,6 +118,45 @@ The code still intentionally enforces:
 - External provider execution policy: generated inventory items can be selected/recommended, but execution is still mediated by provider-specific adapters and the lab allowlist.
 - Cleanup verification after exploitation.
 - Safety/reporting boundaries.
+
+## Generated Python Tools
+
+Generated Python tools replace the older hardcoded internal runners. They are normal capability records with `runner: generated_python_tool` plus a Python file that exposes `run(context)`.
+
+Tracked, reviewed tools live in:
+
+```text
+config/generated_tools/tool_specs.json
+config/generated_tools/code/
+```
+
+Locally generated tools live in:
+
+```text
+data/generated_tools/
+```
+
+`data/generated_tools/` is ignored by Git so experimental tools do not get committed by accident.
+
+Create a deterministic TCP banner tool:
+
+```bash
+.venv/bin/python scripts/create_generated_tool.py --id redis_banner --template tcp_banner --service redis --port 6379
+```
+
+Create a tool from an LLM prompt:
+
+```bash
+.venv/bin/python scripts/create_generated_tool.py --provider llama --prompt "Create a safe observation tool for Redis INFO exposure on port 6379"
+```
+
+Create a tool from explicit files:
+
+```bash
+.venv/bin/python scripts/create_generated_tool.py --spec spec.json --code tool.py
+```
+
+Before a generated tool is cached, the project validates that the Python file defines `run(context)`, only imports from the small allowed import set, and avoids blocked dynamic execution primitives. This is not a full sandbox yet; it is the current review/cache layer before moving generated tools into an isolated execution environment.
 
 ## Tool Boundary
 
@@ -128,7 +169,7 @@ The current deployable agent tools are:
 - Optional Nmap `default,safe` script validation.
 - HTTP probing.
 - Capability candidate selection from the generated inventory.
-- Execution of registered local runner functions.
+- Execution of cached generated Python tools.
 - Execution of allowed safe/default Nmap NSE scripts.
 - Execution of allowed Nuclei templates when the `nuclei` binary is installed.
 - Execution of allowed Metasploit modules when `msfconsole` is installed. Auxiliary scanner/check modules run directly; exploit modules run in Metasploit `check` mode in `aggressive_lab`.
@@ -136,7 +177,7 @@ The current deployable agent tools are:
 - Safety review.
 - LLM narrative reporting.
 
-MITRE ATT&CK is used for technique context and reporting, not exploit code. ATT&CK can keep the agent current on tactics, techniques, mitigations, and detection context, but execution requires either vetted local runners or an integration with a maintained exploit framework.
+MITRE ATT&CK is used for technique context and reporting, not exploit code. ATT&CK can keep the agent current on tactics, techniques, mitigations, and detection context, but execution requires either cached generated tools or an integration with a maintained exploit framework.
 
 ## Capability Inventory
 
@@ -182,14 +223,14 @@ Metasploit availability depends on your apt sources. Once `msfconsole` is on `PA
 
 ## Remaining Architecture Work
 
-To avoid becoming a one-exploit demo, the next step is to replace the small local runner registry with a proper capability layer:
+The hardcoded internal runners have been replaced by cached generated Python tools plus provider adapters. The next architecture steps are:
 
-- Add a capability discovery node that can list available vetted tools, such as Metasploit modules, Nuclei templates, custom validation scripts, or internal red-team tools.
-- Add catalog enrichment from external sources such as MITRE ATT&CK, NVD/CVE feeds, Exploit-DB metadata, Metasploit module metadata, and Nuclei template metadata.
+- Run generated Python tools in a true isolated sandbox instead of the current static-validation cache layer.
+- Add catalog enrichment from external sources such as NVD/CVE feeds, Exploit-DB metadata, Metasploit module metadata, and Nuclei template metadata.
 - Keep execution policy separate from knowledge retrieval, so new intelligence can update recommendations without automatically granting permission to run dangerous actions.
-- Add scoring that considers service fingerprint, version confidence, exploit reliability, safety rating, target scope, and cleanup support.
-- Add dry-run mode to show selected actions without execution.
-- Add unit tests for allowlist enforcement, exploit selection, no-match behavior, cleanup, and malformed config.
+- Expand scoring with exploit reliability, version confidence, target scope, expected proof quality, and cleanup support.
+- Add richer dry-run previews that show why each generated or provider-backed tool would run.
+- Add more tests for allowlist enforcement, generated-tool validation, cleanup, no-match behavior, and malformed generated specs.
 
 ## Commands
 
@@ -283,6 +324,28 @@ Analyze exported identity evidence without live authentication attempts:
 python scripts/analyze_identity_import.py identity-events.json --type logs
 python scripts/analyze_identity_import.py bloodhound-export.json --type bloodhound
 ```
+
+Generated Python tools live in a cache instead of hardcoded campaign branches:
+
+```text
+config/generated_tools/tool_specs.json
+config/generated_tools/code/
+data/generated_tools/
+```
+
+Create a safe generated TCP banner tool and cache it for future ranking:
+
+```bash
+python scripts/create_generated_tool.py --id redis_banner --template tcp_banner --service redis --port 6379
+```
+
+LLM-generated tools are also supported, but they must pass static validation before being cached:
+
+```bash
+python scripts/create_generated_tool.py --id custom_banner --provider llama --prompt "Create a safe TCP banner observation tool for an allowlisted lab service."
+```
+
+Generated tools must expose `run(context: dict) -> dict`, use only approved imports, and execute through the `generated_python_tool` runner.
 
 For direct tool validation without the multi-agent campaign layer, use the lab runner:
 

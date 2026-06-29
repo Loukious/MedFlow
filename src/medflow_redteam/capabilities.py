@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .config_loader import ROOT, load_internal_capabilities_config
+from .config_loader import ROOT
+from .generated_tools import load_generated_tool_specs
 
 
 INVENTORY_PATH = ROOT / "data" / "capabilities" / "capability_inventory.json"
@@ -20,25 +21,9 @@ class CapabilityMatch:
     matched_service: dict[str, str]
 
 
-def load_internal_capabilities() -> list[dict[str, Any]]:
-    config = load_internal_capabilities_config()
-    capabilities = []
-    for item in config.get("capabilities", []):
-        capabilities.append(
-            {
-                **item,
-                "provider": "internal",
-                "source": "config/internal_capabilities.json",
-                "execution": "registered_runner",
-                "safe_to_execute": True,
-            }
-        )
-    return capabilities
-
-
 def load_capability_inventory(path: Path | None = None) -> list[dict[str, Any]]:
     inventory_path = path or INVENTORY_PATH
-    capabilities = load_internal_capabilities()
+    capabilities = load_generated_tool_specs()
     if inventory_path.exists():
         data = json.loads(inventory_path.read_text(encoding="utf-8"))
         capabilities.extend(data.get("capabilities", []))
@@ -138,9 +123,9 @@ def capability_match_score(
             score += 20
             reasons.append(f"CVE {cve} appeared in service text")
 
-    if capability.get("provider") == "internal":
-        score += 30
-        reasons.append("registered internal runner")
+    if capability.get("runner") == "generated_python_tool":
+        score += 50
+        reasons.append("cached generated Python tool")
     elif capability.get("safe_to_execute"):
         score += 5
         reasons.append("provider marked safe to execute")

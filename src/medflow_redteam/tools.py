@@ -11,6 +11,7 @@ from typing import Any
 from .capabilities import select_capabilities_for_services
 from .config_loader import load_lab_config
 from .generated_tools import execute_generated_tool, execute_generated_tool_by_role
+from .metasploit_runner import run_metasploit_module
 
 
 _LAB_CONFIG = load_lab_config()
@@ -232,6 +233,7 @@ def run_selected_exploit(
     selection: dict,
     use_sudo: bool = False,
     execution_mode: str = "safe",
+    metasploit_action: str = "check",
 ) -> dict:
     selected_candidates = selection.get("selected_candidates") or ([selection.get("selected")] if selection and selection.get("selected") else [])
     if not selected_candidates:
@@ -244,7 +246,15 @@ def run_selected_exploit(
         }
     results = []
     for selected in selected_candidates:
-        results.append(run_one_selected_capability(target, selected, use_sudo=use_sudo, execution_mode=execution_mode))
+        results.append(
+            run_one_selected_capability(
+                target,
+                selected,
+                use_sudo=use_sudo,
+                execution_mode=execution_mode,
+                metasploit_action=metasploit_action,
+            )
+        )
     verified_results = [item for item in results if item.get("verified")]
     return {
         "allowed": True,
@@ -261,6 +271,7 @@ def run_selected_exploit(
         "attempted": len(results),
         "successful": len(verified_results),
         "execution_mode": execution_mode,
+        "metasploit_action": metasploit_action,
     }
 
 
@@ -269,15 +280,24 @@ def run_one_selected_capability(
     selected: dict,
     use_sudo: bool = False,
     execution_mode: str = "safe",
+    metasploit_action: str = "check",
 ) -> dict:
     exploit_id = selected.get("id")
     runner = selected.get("runner")
-    if runner != "generated_python_tool":
+    if runner == "metasploit_module":
+        result = run_metasploit_module(
+            validate_target(target),
+            selected,
+            execution_mode=execution_mode,
+            action=metasploit_action,
+        )
+    elif runner != "generated_python_tool":
         result = {
-            "allowed": False,
+            "allowed": True,
             "exploited": False,
             "verified": False,
-            "reason": f"Runner '{runner}' is metadata-only until a generated Python tool is cached for it.",
+            "metadata_only": True,
+            "reason": f"Runner '{runner}' is metadata-only until an executable adapter or generated Python tool is cached for it.",
         }
     elif not generated_tool_allowed_in_mode(selected, execution_mode):
         result = {
@@ -322,6 +342,8 @@ def status_counts(results: list[dict[str, Any]]) -> dict[str, int]:
 def normalize_validation_status(result: dict[str, Any], capability: dict[str, Any] | None = None) -> str:
     if not result.get("allowed", True):
         return "blocked_by_safety_policy"
+    if result.get("metadata_only"):
+        return "metadata_only"
     if result.get("tool_error") or (result.get("stderr") and not result.get("reason") and not result.get("verified")):
         return "tool_error"
     if result.get("exploited"):

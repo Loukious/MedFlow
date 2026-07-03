@@ -162,6 +162,12 @@ def main() -> None:
         default="safe",
         help="Execution policy for selected validation capabilities.",
     )
+    parser.add_argument(
+        "--metasploit-action",
+        choices=["plan", "check", "exploit"],
+        default="check",
+        help="Metasploit action for selected modules. exploit requires --execution-mode aggressive_lab.",
+    )
     parser.add_argument("--no-llm", action="store_true", help="Use deterministic role handoffs for a fast offline demo.")
     parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
     parser.add_argument("--results", type=int, default=5, help="Retrieved context results per query.")
@@ -188,6 +194,7 @@ def main() -> None:
         execute_validation=args.execute_validation or args.loop,
         max_capabilities=args.max_capabilities,
         execution_mode=args.execution_mode,
+        metasploit_action=args.metasploit_action,
         use_llm=not args.no_llm,
         n_results=args.results,
         graph_memory_path=Path(args.graph_memory) if args.graph_memory else None,

@@ -263,6 +263,7 @@ The current deployable agent tools are:
 - HTTP probing.
 - Capability candidate selection from the generated inventory.
 - Metasploit module option and payload planning.
+- Gated Metasploit `plan`, `check`, and lab-only `exploit` execution for allowlisted lab targets.
 - Execution of cached generated Python tools.
 - Provider metadata ranking for Nmap NSE, Nuclei, and Metasploit sources.
 - MedFlow/ATT&CK retrieval.
@@ -291,16 +292,22 @@ The inventory builder currently produced about 19k provider capabilities:
 - Nuclei templates: template IDs, tags, CVEs, severity, and HTTP/service hints.
 - Nmap NSE scripts: categories, service/port hints, and runtime safety classification.
 
-The selector can recommend provider metadata, but the executor only runs cached generated Python tools. A Metasploit, Nuclei, or NSE item becomes executable only after a generated tool is created and cached for that behavior.
+The selector can recommend provider metadata. Cached generated Python tools can execute when their policy allows it. Metasploit modules are handled by a separate gated runner:
+
+- `safe` mode returns a Metasploit plan only.
+- `aggressive_lab` mode with `--metasploit-action check` runs `msfconsole check` against allowlisted lab targets.
+- `aggressive_lab` mode with `--metasploit-action exploit` can run the selected Metasploit module, prefer a command/reverse command payload when available, infer `LHOST` from the route to the target, collect session/command proof, and attempt session cleanup.
+
+Nuclei and NSE provider items are still metadata-only until a generated tool is cached for that behavior.
 
 Execution policy:
 
 - In `safe` mode, only generated tools whose specs allow `safe` can run.
-- In `aggressive_lab` mode, only generated tools whose specs allow `aggressive_lab` can run.
-- Provider metadata from Metasploit, Nuclei, and Nmap NSE is used for selection/recommendation, not direct execution.
+- In `aggressive_lab` mode, generated tools whose specs allow `aggressive_lab` can run, and Metasploit modules can run the requested `--metasploit-action`.
+- Provider metadata from Nuclei and Nmap NSE is used for selection/recommendation, not direct execution.
 - Brute-force, credential, hash, password, persistence, and DoS behavior remains blocked by generation prompts, static validation, and generated-tool review.
 
-If a provider capability has no cached generated Python tool, the runner reports it as metadata-only instead of executing it directly.
+If a Nuclei or NSE provider capability has no cached generated Python tool, the runner reports it as metadata-only instead of executing it directly.
 
 Install optional external execution tools:
 
@@ -309,19 +316,24 @@ scripts/install_redteam_tools.sh nuclei
 scripts/install_redteam_tools.sh metasploit
 ```
 
-These external tools are useful for creating and testing generated tools, but MedFlow no longer executes them through hardcoded adapters in `tools.py`.
+These external tools are useful for creating and testing generated tools. MedFlow executes Metasploit only through the gated lab adapter; Nuclei and Nmap NSE remain metadata-only unless represented by cached generated Python tools.
 
 ## Remaining Architecture Work
 
-The hardcoded internal runners and provider adapters have been replaced by cached generated Python tools. The next architecture steps are:
+The hardcoded internal runners and most provider adapters have been replaced by cached generated Python tools. Metasploit now has a gated adapter for planning, checking, and exploit-proof execution in isolated labs. The next architecture steps are:
 
-- Add a gated Metasploit execution adapter for isolated labs only. The current Metasploit work plans modules, options, and payloads; it does not execute Metasploit modules directly.
 - Run generated Python tools in a true isolated sandbox instead of the current static-validation cache layer.
 - Add catalog enrichment from external sources such as NVD/CVE feeds, Exploit-DB metadata, Metasploit module metadata, and Nuclei template metadata.
 - Keep execution policy separate from knowledge retrieval, so new intelligence can update recommendations without automatically granting permission to run dangerous actions.
 - Expand scoring with exploit reliability, version confidence, target scope, expected proof quality, and cleanup support.
 - Add richer dry-run previews that show why each generated or provider-backed tool would run.
 - Add more tests for allowlist enforcement, generated-tool validation, cleanup, no-match behavior, and malformed generated specs.
+
+Current live validation notes:
+
+- `metabase_cve_2023_38646` produced a positive Metasploit check: the selected `metabase_setup_token_rce` module reported target version `0.46.6` as vulnerable.
+- With `--metasploit-action exploit`, `metabase_cve_2023_38646` produced actual exploit proof in the isolated Vulhub lab: Metasploit opened a command shell session and the runner attempted cleanup with `sessions -K`.
+- `drupal_cve_2018_7600` selected Drupal-specific modules, including Drupalgeddon2, but the current Vulhub container redirected to Drupal installation state during manual validation, so it needs lab setup/fixture work before it is a reliable exploit-proof benchmark.
 
 ## Commands
 

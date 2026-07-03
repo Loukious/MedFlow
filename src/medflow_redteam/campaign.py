@@ -84,6 +84,7 @@ class CampaignState(TypedDict, total=False):
     execute_validation: bool
     max_capabilities: int
     execution_mode: str
+    metasploit_action: str
     use_llm: bool
     ports: list[int]
     tcp: dict[str, Any]
@@ -639,15 +640,17 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             str(state["target"]),
             selection,
             execution_mode=state.get("execution_mode", "safe"),
+            metasploit_action=state.get("metasploit_action", "check"),
         )
         output = agent_to_dict(
             AgentOutput(
                 role="Capability Validation Agent",
                 objective="Select and execute applicable validation capabilities from observed service evidence.",
-                tools=["generated Python validation tools", "provider metadata ranking", "capability cache"],
+                tools=["generated Python validation tools", "gated Metasploit runner", "provider metadata ranking", "capability cache"],
                 decisions=[
                     f"Selected {len(selection.get('selected_candidates', []))} capability candidate(s).",
                     f"Execution mode: {state.get('execution_mode', 'safe')}.",
+                    f"Metasploit action: {state.get('metasploit_action', 'check')}.",
                     "Treat positive proof as verification; do not treat clean tool exit as exploitation success.",
                 ],
                 outputs=[
@@ -945,6 +948,7 @@ def run_campaign(
     execute_validation: bool = False,
     max_capabilities: int = 5,
     execution_mode: str = "safe",
+    metasploit_action: str = "check",
     use_llm: bool = True,
     n_results: int = 5,
     graph_memory_path: Path | None = None,
@@ -966,6 +970,7 @@ def run_campaign(
         "execute_validation": execute_validation,
         "max_capabilities": max_capabilities,
         "execution_mode": execution_mode,
+        "metasploit_action": metasploit_action,
         "use_llm": use_llm,
         "ports": ports or (default_ports_for_target(target) if target else []),
         "steps": [],
@@ -1093,6 +1098,7 @@ def run_validation_loop(
             str(state["target"]),
             selection,
             execution_mode=state.get("execution_mode", "safe"),
+            metasploit_action=state.get("metasploit_action", "check"),
         )
         for item in validation.get("results", []):
             if item.get("selected_exploit_id"):

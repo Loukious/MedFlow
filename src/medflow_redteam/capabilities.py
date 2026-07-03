@@ -49,29 +49,42 @@ def keyword_matches(keyword: str, observed_text: str) -> bool:
 
 WEAK_PRODUCT_KEYWORDS = {
     "apache",
+    "admin",
     "api",
     "auth",
     "base",
+    "capture",
     "code",
     "command",
     "content",
+    "data",
+    "download",
     "endpoint",
     "exec",
     "execution",
+    "exposure",
     "file",
+    "fileformat",
     "forms",
+    "html",
     "httpd",
     "injection",
     "lang",
     "language",
+    "packet",
     "parser",
+    "path",
     "property",
     "remote",
     "request",
+    "sensitive",
     "setup",
+    "text",
     "token",
+    "txt",
     "type",
     "webapp",
+    "word",
 }
 
 
@@ -79,6 +92,9 @@ def has_blocked_provider_indicator(capability: dict[str, Any]) -> bool:
     runner = capability.get("runner")
     if runner not in {"metasploit_module", "nuclei_template"}:
         return False
+    module_path = str(capability.get("module_path") or "")
+    if runner == "metasploit_module" and re.match(r"^exploit/[^/]+/(fileformat|browser)/", module_path):
+        return True
     text = " ".join(
         str(capability.get(key, ""))
         for key in ["id", "name", "module_path", "template_path", "description"]
@@ -207,7 +223,7 @@ def web_evidence_text(web_routes: dict[str, Any] | None) -> str:
         return ""
     values: list[str] = []
     for route in (web_routes or {}).get("web_routes", []):
-        for key in ["url", "title", "server", "powered_by", "content_type", "artifact_signal"]:
+        for key in ["title", "server", "powered_by", "content_type", "artifact_signal"]:
             value = route.get(key)
             if value:
                 values.append(str(value))
@@ -232,15 +248,15 @@ def web_route_score(capability: dict[str, Any], service: dict[str, str], web_rou
     is_web_relevant = observed_is_web and any(term in f"{capability_text} {service_text}" for term in ["http", "web", "api", "cookie", "header", "file", "download"])
     if any(route.get("artifact_signal") for route in routes):
         if is_web_relevant:
-            score += 18
+            score += 4
             reasons.append("web artifact signal observed")
     if any(str(route.get("status")) == "200" and route.get("url", "").lower().rstrip("/").endswith("/login") for route in routes):
         if any(term in capability_text for term in ["auth", "login", "session", "cookie", "http"]):
-            score += 12
+            score += 4
             reasons.append("login route observed")
     if any("application/json" in str(route.get("content_type", "")).lower() for route in routes):
         if any(term in capability_text for term in ["api", "json", "http"]):
-            score += 10
+            score += 4
             reasons.append("API-like response observed")
     return score, reasons
 

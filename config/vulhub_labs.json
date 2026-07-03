@@ -98,6 +98,27 @@
       "services": ["web"],
       "ports": [80],
       "goal": "Assess an authorized Vulhub Drupal lab target and identify viable validation paths"
+    },
+    "spring_cve_2022_22963": {
+      "path": "vulhub/spring/CVE-2022-22963",
+      "project": "medflow_vulhub_spring_cve_2022_22963",
+      "services": ["spring"],
+      "ports": [8080],
+      "goal": "Assess an authorized Vulhub Spring Cloud Function lab target and identify viable validation paths"
+    },
+    "thinkphp_5_rce": {
+      "path": "vulhub/thinkphp/5-rce",
+      "project": "medflow_vulhub_thinkphp_5_rce",
+      "services": ["web"],
+      "ports": [80],
+      "goal": "Assess an authorized Vulhub ThinkPHP lab target and identify viable validation paths"
+    },
+    "activemq_cve_2023_46604": {
+      "path": "vulhub/activemq/CVE-2023-46604",
+      "project": "medflow_vulhub_activemq_cve_2023_46604",
+      "services": ["activemq"],
+      "ports": [61616, 8161],
+      "goal": "Assess an authorized Vulhub Apache ActiveMQ lab target and identify viable validation paths"
     }
   }
 }

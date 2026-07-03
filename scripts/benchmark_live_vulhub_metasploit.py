@@ -190,6 +190,7 @@ def build_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
         "runnable": len(runnable),
         "skipped_not_running": sum(1 for item in results if item.get("status") == "skipped_not_running"),
         "exploited": sum(1 for item in runnable if item.get("status") == "exploited"),
+        "solved": sum(1 for item in runnable if item.get("status") == "exploited"),
         "expected_selected": sum(1 for item in runnable if item.get("expected_selected")),
         "expected_exploited": sum(1 for item in runnable if item.get("expected_exploited")),
         "verified_only": sum(1 for item in runnable if item.get("status") == "verified_only"),

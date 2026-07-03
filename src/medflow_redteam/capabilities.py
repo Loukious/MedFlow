@@ -58,6 +58,7 @@ WEAK_PRODUCT_KEYWORDS = {
     "command",
     "content",
     "data",
+    "demo",
     "download",
     "endpoint",
     "exec",
@@ -74,11 +75,15 @@ WEAK_PRODUCT_KEYWORDS = {
     "packet",
     "parser",
     "path",
+    "php",
+    "plugin",
     "property",
     "remote",
     "request",
     "sensitive",
     "setup",
+    "theme",
+    "themes",
     "text",
     "token",
     "txt",
@@ -90,6 +95,30 @@ WEAK_PRODUCT_KEYWORDS = {
 
 WEAK_TECHNOLOGY_SIGNALS = {"bootstrap", "express", "jquery"}
 
+GENERIC_TECHNOLOGY_SIGNALS = {"functionrouter", "ognl", "php"}
+
+
+NOISY_PRODUCT_KEYWORDS = {
+    "ack",
+    "cmd",
+    "get",
+    "new",
+    "old",
+    "php",
+    "post",
+    "request",
+    "response",
+    "rhost",
+    "rhosts",
+    "shell",
+    "syn",
+    "tcp",
+    "udp",
+    "uri",
+    "url",
+    "web",
+}
+
 
 def has_blocked_provider_indicator(capability: dict[str, Any]) -> bool:
     runner = capability.get("runner")
@@ -97,6 +126,8 @@ def has_blocked_provider_indicator(capability: dict[str, Any]) -> bool:
         return False
     module_path = str(capability.get("module_path") or "")
     if runner == "metasploit_module" and not module_path.startswith(("exploit/", "auxiliary/")):
+        return True
+    if runner == "metasploit_module" and module_path.startswith("auxiliary/scanner/portscan/"):
         return True
     if runner == "metasploit_module" and re.match(r"^exploit/[^/]+/(fileformat|browser)/", module_path):
         return True
@@ -165,7 +196,7 @@ def capability_match_score(
     for keyword in match.get("product_keywords", []):
         lowered = normalize_text(str(keyword))
         if keyword_matches(lowered, observed_text):
-            if lowered in {observed_service, "http", "https", "tcp", "udp"}:
+            if lowered in {observed_service, "http", "https", "tcp", "udp"} | NOISY_PRODUCT_KEYWORDS:
                 score += 4
             elif lowered in WEAK_PRODUCT_KEYWORDS:
                 score += 6
@@ -232,6 +263,8 @@ def web_evidence_text(web_routes: dict[str, Any] | None) -> str:
             value = route.get(key)
             if value:
                 values.append(str(value))
+        values.extend(str(item) for item in route.get("links", []))
+        values.extend(str(item) for item in route.get("technology_signals", []))
     for fingerprint in (web_routes or {}).get("web_fingerprints", []):
         for key in ["server", "powered_by"]:
             value = fingerprint.get(key)
@@ -253,14 +286,38 @@ def web_route_score(capability: dict[str, Any], service: dict[str, str], web_rou
     fingerprints = web_routes.get("web_fingerprints") or []
     score = 0
     reasons: list[str] = []
+    observed_signals = {
+        str(item).lower()
+        for source in [*fingerprints, *routes]
+        for item in source.get("technology_signals", [])
+    }
+    matched_signals: set[str] = set()
     for signal in sorted({str(item).lower() for fp in fingerprints for item in fp.get("technology_signals", [])}):
         if signal and keyword_matches(signal, capability_text):
+            matched_signals.add(signal)
             if signal in WEAK_TECHNOLOGY_SIGNALS:
                 score += 4
                 reasons.append(f"weak technology signal {signal} matched")
             else:
-                score += 45
+                score += 60
                 reasons.append(f"technology signal {signal} matched")
+    for signal in sorted({str(item).lower() for route in routes for item in route.get("technology_signals", [])}):
+        if signal and keyword_matches(signal, capability_text):
+            matched_signals.add(signal)
+            if signal in WEAK_TECHNOLOGY_SIGNALS:
+                score += 4
+                reasons.append(f"weak route technology signal {signal} matched")
+            else:
+                score += 60
+                reasons.append(f"route technology signal {signal} matched")
+    strong_observed_signals = observed_signals - WEAK_TECHNOLOGY_SIGNALS - GENERIC_TECHNOLOGY_SIGNALS
+    if (
+        strong_observed_signals
+        and not (matched_signals & strong_observed_signals)
+        and runner in {"metasploit_module", "nuclei_template"}
+    ):
+        score -= 45
+        reasons.append(f"observed technology signal mismatch: {', '.join(sorted(strong_observed_signals))}")
     service_text = str((capability.get("match") or {}).get("service", "")).lower()
     observed_service = normalize_text(service.get("service"))
     observed_port = normalize_text(service.get("port"))

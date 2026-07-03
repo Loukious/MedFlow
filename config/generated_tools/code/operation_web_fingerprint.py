@@ -1,4 +1,5 @@
 import time
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -10,6 +11,13 @@ def web_technology_signals(headers: dict, body: str) -> list[str]:
         "django": "django",
         "express": "express",
         "php": "php",
+        "thinkphp": "thinkphp",
+        "spring": "spring",
+        "spring cloud": "spring cloud",
+        "functionrouter": "functionrouter",
+        "whitelabel": "whitelabel error page",
+        "activemq": "activemq",
+        "openwire": "openwire",
         "wordpress": "wp-content",
         "jquery": "jquery",
         "bootstrap": "bootstrap",
@@ -65,6 +73,39 @@ def run(context: dict) -> dict:
                         "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
                     }
                 )
+        except HTTPError as exc:
+            body = exc.read(8192).decode("utf-8", errors="replace")
+            headers = {key.lower(): value for key, value in exc.headers.items()}
+            technology_signals = web_technology_signals(headers, body)
+            if shiro_cookie_signal(url):
+                technology_signals = sorted({*technology_signals, "shiro"})
+            fingerprints.append(
+                {
+                    "url": url,
+                    "status": exc.code,
+                    "server": headers.get("server", ""),
+                    "powered_by": headers.get("x-powered-by", ""),
+                    "set_cookie_present": bool(headers.get("set-cookie")),
+                    "security_headers": {
+                        "content_security_policy": bool(headers.get("content-security-policy")),
+                        "strict_transport_security": bool(headers.get("strict-transport-security")),
+                        "x_frame_options": bool(headers.get("x-frame-options")),
+                        "x_content_type_options": bool(headers.get("x-content-type-options")),
+                    },
+                    "technology_signals": technology_signals,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                    "http_error": True,
+                }
+            )
         except Exception as exc:
-            fingerprints.append({"url": url, "error": str(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)})
+            error_text = str(exc)
+            technology_signals = web_technology_signals({}, error_text)
+            fingerprints.append(
+                {
+                    "url": url,
+                    "error": error_text,
+                    "technology_signals": technology_signals,
+                    "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                }
+            )
     return {"allowed": True, "verified": True, "exploited": False, "web_fingerprints": fingerprints}

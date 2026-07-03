@@ -302,6 +302,85 @@
         "php/meterpreter/reverse_tcp"
       ],
       "metasploit_defaults_observed": []
+    },
+    {
+      "name": "spring_cve_2022_22963",
+      "vulhub_path": "spring/CVE-2022-22963",
+      "service": {
+        "port": "8080",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Spring Cloud Function 3.2.2 functionRouter SpEL"
+      },
+      "cves": [
+        "CVE-2022-22963"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/spring_cloud_function_spel_injection"
+      ],
+      "candidate_modules": [
+        "exploit/multi/http/spring_cloud_function_spel_injection"
+      ],
+      "expected_payloads": [
+        "cmd/unix/generic",
+        "cmd/unix/reverse_bash",
+        "linux/x64/meterpreter/reverse_tcp"
+      ],
+      "metasploit_defaults_observed": []
+    },
+    {
+      "name": "thinkphp_5_rce",
+      "vulhub_path": "thinkphp/5-rce",
+      "service": {
+        "port": "80",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "ThinkPHP 5.0.20 default page"
+      },
+      "cves": [
+        "CVE-2018-20062",
+        "CVE-2019-9082"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/unix/webapp/thinkphp_rce"
+      ],
+      "candidate_modules": [
+        "exploit/unix/webapp/thinkphp_rce"
+      ],
+      "expected_payloads": [
+        "cmd/unix/reverse_netcat",
+        "cmd/unix/generic",
+        "linux/x64/meterpreter_reverse_tcp"
+      ],
+      "metasploit_defaults_observed": [
+        "cmd/unix/reverse_netcat",
+        "linux/x64/meterpreter_reverse_tcp"
+      ]
+    },
+    {
+      "name": "activemq_cve_2023_46604",
+      "vulhub_path": "activemq/CVE-2023-46604",
+      "service": {
+        "port": "61616",
+        "protocol": "tcp",
+        "service": "activemq",
+        "version": "Apache ActiveMQ OpenWire 5.18.2"
+      },
+      "cves": [
+        "CVE-2023-46604"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/misc/apache_activemq_rce_cve_2023_46604"
+      ],
+      "candidate_modules": [
+        "exploit/multi/misc/apache_activemq_rce_cve_2023_46604"
+      ],
+      "expected_payloads": [
+        "cmd/unix/reverse_bash",
+        "linux/x64/shell_reverse_tcp",
+        "linux/x64/meterpreter_reverse_tcp"
+      ],
+      "metasploit_defaults_observed": []
     }
   ]
 }

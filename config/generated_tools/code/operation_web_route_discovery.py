@@ -1,5 +1,6 @@
 import time
 import re
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
@@ -25,10 +26,57 @@ def artifact_signal(url: str, content_type: str, body: bytes) -> str:
     return ""
 
 
+def technology_signals(url: str, title: str, links: list[str], body: str, status: int | None = None) -> list[str]:
+    lowered_url = url.lower()
+    text = " ".join([title, " ".join(links), body[:2000]]).lower()
+    signals = set()
+    if "struts" in text or re.search(r"\bs2-\d{3}\b", text) or (status in {200, 500} and ".action" in lowered_url):
+        signals.add("struts")
+        signals.add("ognl")
+    if "rocketmq" in text:
+        signals.add("rocketmq")
+    if "activemq" in text or "openwire" in text:
+        signals.add("activemq")
+        signals.add("openwire")
+    if "couchdb" in text or '"couchdb"' in text:
+        signals.add("couchdb")
+    if "thinkphp" in text:
+        signals.add("thinkphp")
+        signals.add("php")
+    if "spring" in text or "whitelabel error page" in text or (status in {200, 500} and "functionrouter" in lowered_url):
+        signals.add("spring")
+        signals.add("spring cloud")
+        signals.add("functionrouter")
+    return sorted(signals)
+
+
 def run(context: dict) -> dict:
     target = context["target"]
     ports = [int(port) for port in context.get("ports", [])]
-    paths = context.get("paths") or ["/", "/login", "/logout", "/admin", "/dashboard", "/data", "/data/0", "/data/1", "/download", "/download/0", "/download/1", "/capture", "/captures", "/pcap", "/api", "/api/v1", "/robots.txt"]
+    paths = context.get("paths") or [
+        "/",
+        "/index.action",
+        "/login.action",
+        "/hello.action",
+        "/showcase.action",
+        "/functionRouter",
+        "/login",
+        "/logout",
+        "/admin",
+        "/dashboard",
+        "/data",
+        "/data/0",
+        "/data/1",
+        "/download",
+        "/download/0",
+        "/download/1",
+        "/capture",
+        "/captures",
+        "/pcap",
+        "/api",
+        "/api/v1",
+        "/robots.txt",
+    ]
     output = []
     seen = set()
     for port in ports:
@@ -49,18 +97,41 @@ def run(context: dict) -> dict:
                     links = []
                     if "text/html" in response.headers.get("Content-Type", ""):
                         links = links_from_html(text)
+                    title = title_from_html(text)
                     output.append(
                         {
                             "url": url,
                             "status": response.status,
                             "content_type": response.headers.get("Content-Type", ""),
                             "content_length": response.headers.get("Content-Length", ""),
-                            "title": title_from_html(text),
+                            "title": title,
                             "links": sorted(set(links))[:20],
+                            "technology_signals": technology_signals(url, title, links, text, response.status),
                             "artifact_signal": artifact_signal(url, response.headers.get("Content-Type", ""), body),
                             "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
                         }
                     )
+            except HTTPError as exc:
+                body = exc.read(8192)
+                text = body.decode("utf-8", errors="replace")
+                links = []
+                if "text/html" in exc.headers.get("Content-Type", ""):
+                    links = links_from_html(text)
+                title = title_from_html(text)
+                output.append(
+                    {
+                        "url": url,
+                        "status": exc.code,
+                        "content_type": exc.headers.get("Content-Type", ""),
+                        "content_length": exc.headers.get("Content-Length", ""),
+                        "title": title,
+                        "links": sorted(set(links))[:20],
+                        "technology_signals": technology_signals(url, title, links, text, exc.code),
+                        "artifact_signal": artifact_signal(url, exc.headers.get("Content-Type", ""), body),
+                        "elapsed_ms": round((time.perf_counter() - started) * 1000, 2),
+                        "http_error": True,
+                    }
+                )
             except Exception as exc:
                 output.append({"url": url, "error": str(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)})
     return {"allowed": True, "verified": True, "exploited": False, "web_routes": output}

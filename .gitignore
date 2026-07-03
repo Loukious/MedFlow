@@ -9,6 +9,7 @@ data/capability_sources/
 data/graph/
 data/generated_tools/
 reports/
+vulhub/
 *.pyc
 .env
 *.pdf

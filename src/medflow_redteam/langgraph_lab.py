@@ -183,13 +183,13 @@ Actual graph steps completed:
 TCP connect check:
 {tcp}
 
-Nmap service discovery:
+Generated service discovery:
 {services}
 
 HTTP probe:
 {http}
 
-Nmap default/safe script validation:
+Generated safe script validation:
 {safe_scripts}
 
 Exploit tool selection:

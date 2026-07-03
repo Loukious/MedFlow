@@ -569,7 +569,7 @@ and success criteria. Do not provide exploit instructions.
         fallback = fallback_agent_output(
             "Reconnaissance Agent",
             state["goal"],
-            ["Nmap", "HTTP probing", "DNS enumeration placeholder", "asset inventory placeholder"],
+            ["generated TCP check", "generated service scan", "generated HTTP probes", "asset inventory placeholder"],
             [
                 "Use only allowlisted targets for active probing.",
                 "Classify exposed services and likely attack surfaces.",
@@ -644,7 +644,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             AgentOutput(
                 role="Capability Validation Agent",
                 objective="Select and execute applicable validation capabilities from observed service evidence.",
-                tools=["Metasploit check/auxiliary adapters", "Nuclei templates", "Nmap NSE scripts", "internal validation runners"],
+                tools=["generated Python validation tools", "provider metadata ranking", "capability cache"],
                 decisions=[
                     f"Selected {len(selection.get('selected_candidates', []))} capability candidate(s).",
                     f"Execution mode: {state.get('execution_mode', 'safe')}.",

@@ -165,14 +165,12 @@ The deployable LangGraph agent does not depend on Docker. Docker is only used by
 The current deployable agent tools are:
 
 - TCP connectivity checks.
-- Nmap service discovery.
-- Optional Nmap `default,safe` script validation.
+- Generated service discovery.
+- Optional generated safe script validation.
 - HTTP probing.
 - Capability candidate selection from the generated inventory.
 - Execution of cached generated Python tools.
-- Execution of allowed safe/default Nmap NSE scripts.
-- Execution of allowed Nuclei templates when the `nuclei` binary is installed.
-- Execution of allowed Metasploit modules when `msfconsole` is installed. Auxiliary scanner/check modules run directly; exploit modules run in Metasploit `check` mode in `aggressive_lab`.
+- Provider metadata ranking for Nmap NSE, Nuclei, and Metasploit sources.
 - MedFlow/ATT&CK retrieval.
 - Safety review.
 - LLM narrative reporting.

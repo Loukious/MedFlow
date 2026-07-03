@@ -169,6 +169,24 @@
         "product_keywords": ["http", "route", "web"]
       },
       "proof_goal": "Request configured web paths and record safe response metadata."
+    },
+    {
+      "id": "generated:flask_ssti_math_probe",
+      "name": "Flask/Jinja2 SSTI arithmetic probe",
+      "description": "Generated Python validation tool that checks for Jinja2 SSTI using a benign arithmetic expression.",
+      "provider": "generated_python",
+      "code_path": "code/flask_ssti_math_probe.py",
+      "risk": "safe vulnerability validation",
+      "safe_to_execute": true,
+      "tool_kind": "validation_capability",
+      "generated_by": "toolsmith_vulhub_test",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "http",
+        "ports": ["8000"],
+        "product_keywords": ["flask", "gunicorn", "werkzeug", "http"]
+      },
+      "proof_goal": "Send a benign Jinja2 arithmetic expression and verify that the rendered result is returned."
     }
   ]
 }

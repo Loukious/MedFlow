@@ -221,7 +221,7 @@ config/benchmarks/vulhub_metasploit_selection.json
 scripts/benchmark_metasploit_selection.py
 ```
 
-The benchmark labels expected Metasploit modules for scoring only. The selector does not receive the expected module as an instruction; it ranks modules from observed service evidence, optional CVE intelligence, web titles/routes, graph memory, and provider inventory metadata.
+The benchmark labels expected Metasploit modules and acceptable payloads for scoring only. The selector does not receive the expected module as an instruction; it ranks modules from observed service evidence, optional CVE intelligence, web titles/routes, graph memory, and provider inventory metadata. Payload planning is handled separately by `src/medflow_redteam/metasploit_planner.py`, which chooses module options and payload candidates from module metadata, platform/architecture hints, default payloads, and observed service data.
 
 Run the benchmark:
 
@@ -239,6 +239,15 @@ Current verified benchmark result:
 
 - `service` mode: expected module was in top 5 for all 11 labs.
 - `cve` mode: expected module was top 1 for all 11 labs.
+- Payload mode: acceptable payload was top 1 for all 22 service/CVE benchmark rows.
+
+The benchmark output now reports:
+
+- module rank
+- selected payload and payload rank
+- expected modules
+- top module candidates
+- misses and payload misses in the JSON summary
 
 This is the baseline for a SkillOpt-style improvement loop: run scored lab rollouts, inspect misses and weak rankings, update the ranking/skill policy, and keep changes only when held-out benchmark performance improves.
 
@@ -253,6 +262,7 @@ The current deployable agent tools are:
 - Optional generated safe script validation.
 - HTTP probing.
 - Capability candidate selection from the generated inventory.
+- Metasploit module option and payload planning.
 - Execution of cached generated Python tools.
 - Provider metadata ranking for Nmap NSE, Nuclei, and Metasploit sources.
 - MedFlow/ATT&CK retrieval.
@@ -277,7 +287,7 @@ python scripts/build_capability_inventory.py --skip-network
 
 The inventory builder currently produced about 19k provider capabilities:
 
-- Metasploit metadata: module paths, CVEs extracted from Ruby module references, service hints, ports, product keywords, and safety metadata.
+- Metasploit metadata: module paths, CVEs extracted from Ruby module references, service hints, ports, product keywords, platform/architecture hints, default payloads, and safety metadata.
 - Nuclei templates: template IDs, tags, CVEs, severity, and HTTP/service hints.
 - Nmap NSE scripts: categories, service/port hints, and runtime safety classification.
 
@@ -305,6 +315,7 @@ These external tools are useful for creating and testing generated tools, but Me
 
 The hardcoded internal runners and provider adapters have been replaced by cached generated Python tools. The next architecture steps are:
 
+- Add a gated Metasploit execution adapter for isolated labs only. The current Metasploit work plans modules, options, and payloads; it does not execute Metasploit modules directly.
 - Run generated Python tools in a true isolated sandbox instead of the current static-validation cache layer.
 - Add catalog enrichment from external sources such as NVD/CVE feeds, Exploit-DB metadata, Metasploit module metadata, and Nuclei template metadata.
 - Keep execution policy separate from knowledge retrieval, so new intelligence can update recommendations without automatically granting permission to run dangerous actions.

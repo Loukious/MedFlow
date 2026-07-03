@@ -19,6 +19,13 @@
       ],
       "candidate_modules": [
         "exploit/linux/http/metabase_setup_token_rce"
+      ],
+      "expected_payloads": [
+        "cmd/unix/generic",
+        "cmd/unix/reverse_bash"
+      ],
+      "metasploit_defaults_observed": [
+        "cmd/unix/reverse_bash"
       ]
     },
     {
@@ -40,6 +47,14 @@
       "candidate_modules": [
         "auxiliary/scanner/couchdb/couchdb_enum",
         "exploit/linux/http/apache_couchdb_cmd_exec"
+      ],
+      "expected_payloads": [
+        "cmd/unix/reverse_bash",
+        "cmd/unix/reverse_openssl",
+        "linux/x64/shell_reverse_tcp"
+      ],
+      "metasploit_defaults_observed": [
+        "linux/x64/shell_reverse_tcp"
       ]
     },
     {
@@ -59,6 +74,22 @@
       ],
       "candidate_modules": [
         "exploit/multi/http/apache_couchdb_erlang_rce"
+      ],
+      "expected_payloads": [
+        "cmd/unix/reverse_bash",
+        "cmd/unix/reverse_openssl",
+        "cmd/windows/powershell_reverse_tcp",
+        "linux/x64/shell_reverse_tcp",
+        "linux/x86/meterpreter_reverse_tcp",
+        "windows/x64/meterpreter/reverse_tcp",
+        "windows/x64/meterpreter_reverse_tcp"
+      ],
+      "metasploit_defaults_observed": [
+        "cmd/unix/reverse_openssl",
+        "cmd/windows/powershell_reverse_tcp",
+        "linux/x86/meterpreter_reverse_tcp",
+        "windows/x64/meterpreter/reverse_tcp",
+        "windows/x64/meterpreter_reverse_tcp"
       ]
     },
     {
@@ -78,6 +109,14 @@
       ],
       "candidate_modules": [
         "exploit/multi/http/struts2_multi_eval_ognl"
+      ],
+      "expected_payloads": [
+        "cmd/unix/generic",
+        "cmd/unix/reverse_bash",
+        "linux/x64/meterpreter/reverse_tcp"
+      ],
+      "metasploit_defaults_observed": [
+        "linux/x64/meterpreter/reverse_tcp"
       ]
     },
     {
@@ -97,7 +136,12 @@
       ],
       "candidate_modules": [
         "exploit/multi/http/struts_dmi_exec"
-      ]
+      ],
+      "expected_payloads": [
+        "cmd/unix/generic",
+        "cmd/unix/reverse_bash"
+      ],
+      "metasploit_defaults_observed": []
     },
     {
       "name": "struts2_s2_045",
@@ -116,7 +160,12 @@
       ],
       "candidate_modules": [
         "exploit/multi/http/struts2_content_type_ognl"
-      ]
+      ],
+      "expected_payloads": [
+        "cmd/unix/generic",
+        "cmd/unix/reverse_bash"
+      ],
+      "metasploit_defaults_observed": []
     },
     {
       "name": "struts2_s2_057",
@@ -135,6 +184,13 @@
       ],
       "candidate_modules": [
         "exploit/multi/http/struts2_namespace_ognl"
+      ],
+      "expected_payloads": [
+        "cmd/unix/generic",
+        "cmd/unix/reverse_bash"
+      ],
+      "metasploit_defaults_observed": [
+        "cmd/unix/generic"
       ]
     },
     {
@@ -154,6 +210,13 @@
       ],
       "candidate_modules": [
         "exploit/multi/http/shiro_rememberme_v124_deserialize"
+      ],
+      "expected_payloads": [
+        "cmd/unix/generic",
+        "cmd/unix/reverse_bash"
+      ],
+      "metasploit_defaults_observed": [
+        "cmd/unix/reverse_bash"
       ]
     },
     {
@@ -174,6 +237,13 @@
       "candidate_modules": [
         "auxiliary/scanner/misc/rocketmq_version",
         "exploit/multi/http/apache_rocketmq_update_config"
+      ],
+      "expected_payloads": [
+        "cmd/linux/http/x64/meterpreter/reverse_tcp",
+        "cmd/unix/reverse_bash"
+      ],
+      "metasploit_defaults_observed": [
+        "cmd/linux/http/x64/meterpreter/reverse_tcp"
       ]
     },
     {
@@ -193,6 +263,20 @@
       ],
       "candidate_modules": [
         "exploit/multi/http/solr_velocity_rce"
+      ],
+      "expected_payloads": [
+        "cmd/unix/reverse_bash",
+        "cmd/windows/generic",
+        "java/meterpreter/reverse_tcp",
+        "linux/x86/meterpreter/reverse_tcp",
+        "windows/meterpreter/reverse_tcp"
+      ],
+      "metasploit_defaults_observed": [
+        "cmd/unix/reverse_bash",
+        "cmd/windows/generic",
+        "java/meterpreter/reverse_tcp",
+        "linux/x86/meterpreter/reverse_tcp",
+        "windows/meterpreter/reverse_tcp"
       ]
     },
     {
@@ -212,7 +296,12 @@
       ],
       "candidate_modules": [
         "exploit/unix/webapp/drupal_drupalgeddon2"
-      ]
+      ],
+      "expected_payloads": [
+        "cmd/unix/reverse_bash",
+        "php/meterpreter/reverse_tcp"
+      ],
+      "metasploit_defaults_observed": []
     }
   ]
 }

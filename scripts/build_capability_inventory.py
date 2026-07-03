@@ -62,6 +62,31 @@ def extract_cves(text: str) -> list[str]:
     return sorted(cves)
 
 
+def extract_default_payloads(text: str) -> list[str]:
+    payloads = set()
+    for match in re.finditer(r"['\"]PAYLOAD['\"]\s*=>\s*['\"]([^'\"]+)['\"]", text, flags=re.IGNORECASE):
+        payloads.add(match.group(1).strip())
+    return sorted(payloads)
+
+
+def extract_module_platforms(text: str) -> list[str]:
+    platforms = set()
+    for match in re.finditer(r"['\"]Platform['\"]\s*=>\s*(.+?)(?:,|\n\s*['\"])", text, flags=re.DOTALL):
+        value = match.group(1)
+        for platform in re.findall(r"['\"]([a-zA-Z0-9_/-]+)['\"]", value):
+            platforms.add(platform.lower())
+        for platform in re.findall(r"%w\{([^}]+)\}", value):
+            platforms.update(item.lower() for item in platform.split())
+    return sorted(platforms)
+
+
+def extract_module_arches(text: str) -> list[str]:
+    arches = set()
+    for arch in re.findall(r"\bARCH_([A-Z0-9_]+)\b", text):
+        arches.add(arch.lower())
+    return sorted(arches)
+
+
 def words_from_module_path(module_path: str, name: str, limit: int = 12) -> list[str]:
     ignored = {
         "exploit",
@@ -156,6 +181,9 @@ def metasploit_capabilities(repo: Path, limit: int | None = None) -> list[dict[s
         module_path = "/".join(module_parts)
         cves = extract_cves(text)
         service = platform_service_from_module(module_path, path, text)
+        default_payloads = extract_default_payloads(text)
+        platforms = extract_module_platforms(text)
+        arches = extract_module_arches(text)
         unsafe_terms = {
             "brute",
             "cred",
@@ -193,6 +221,9 @@ def metasploit_capabilities(repo: Path, limit: int | None = None) -> list[dict[s
                 "safe_to_execute": safe_to_execute,
                 "module_path": module_path,
                 "module_type": module_type,
+                "platform": platforms,
+                "arch": arches,
+                "default_payloads": default_payloads,
                 "risk": "external framework module metadata",
                 "description": description[:500],
                 "cves": cves,

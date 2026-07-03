@@ -11,6 +11,7 @@ from rich.table import Table
 
 from medflow_redteam.capabilities import select_capabilities_for_services
 from medflow_redteam.config_loader import ROOT
+from medflow_redteam.metasploit_planner import payload_rank, plan_metasploit_execution
 
 
 DEFAULT_MANIFEST = ROOT / "config" / "benchmarks" / "vulhub_metasploit_selection.json"
@@ -51,9 +52,10 @@ def selected_modules(candidates: list[dict[str, Any]], limit: int = 5) -> list[s
 
 
 def run_one(lab: dict[str, Any], mode: str, top_k: int) -> dict[str, Any]:
+    service = service_for_mode(lab, mode)
     selection = select_capabilities_for_services(
         "benchmark.local",
-        [service_for_mode(lab, mode)],
+        [service],
         limit=top_k,
     )
     candidates = [
@@ -62,15 +64,27 @@ def run_one(lab: dict[str, Any], mode: str, top_k: int) -> dict[str, Any]:
         if item.get("provider") == "metasploit"
     ]
     rank = rank_for_expected(candidates, lab.get("expected_metasploit_modules", []))
+    expected_ids = {module_id(path) for path in lab.get("expected_metasploit_modules", [])}
+    expected_candidate = next((item for item in candidates if item.get("id") in expected_ids), None)
+    payload_plan = plan_metasploit_execution(expected_candidate, service) if expected_candidate else {}
+    payloads = payload_plan.get("payload_candidates") or []
+    expected_payloads = lab.get("expected_payloads", [])
+    selected_payload_rank = payload_rank(payloads, expected_payloads)
     return {
         "name": lab["name"],
         "vulhub_path": lab["vulhub_path"],
         "mode": mode,
         "expected_modules": lab.get("expected_metasploit_modules", []),
+        "expected_payloads": expected_payloads,
         "rank": rank,
         "hit_top_1": rank is not None and rank <= 1,
         "hit_top_3": rank is not None and rank <= 3,
         "hit_top_5": rank is not None and rank <= 5,
+        "payload_rank": selected_payload_rank,
+        "payload_hit_top_1": selected_payload_rank is not None and selected_payload_rank <= 1,
+        "payload_hit_top_3": selected_payload_rank is not None and selected_payload_rank <= 3,
+        "selected_payload": payload_plan.get("selected_payload", ""),
+        "payload_plan": payload_plan,
         "top_modules": selected_modules(candidates, limit=top_k),
         "top_reasons": [
             {
@@ -90,7 +104,10 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
         "top_1": sum(1 for item in results if item["hit_top_1"]),
         "top_3": sum(1 for item in results if item["hit_top_3"]),
         "top_5": sum(1 for item in results if item["hit_top_5"]),
+        "payload_top_1": sum(1 for item in results if item["payload_hit_top_1"]),
+        "payload_top_3": sum(1 for item in results if item["payload_hit_top_3"]),
         "misses": [item["name"] for item in results if not item["hit_top_5"]],
+        "payload_misses": [item["name"] for item in results if not item["payload_hit_top_3"]],
     }
 
 
@@ -100,6 +117,7 @@ def print_results(results: list[dict[str, Any]], summary: dict[str, Any]) -> Non
     table.add_column("Lab")
     table.add_column("Mode")
     table.add_column("Rank")
+    table.add_column("Payload")
     table.add_column("Expected")
     table.add_column("Top Modules")
     for item in results:
@@ -107,6 +125,7 @@ def print_results(results: list[dict[str, Any]], summary: dict[str, Any]) -> Non
             item["name"],
             item["mode"],
             str(item["rank"] or "miss"),
+            f"{item['payload_rank'] or 'miss'}: {item.get('selected_payload', '')}",
             "\n".join(item["expected_modules"]),
             "\n".join(item["top_modules"][:3]),
         )
@@ -118,7 +137,10 @@ def print_results(results: list[dict[str, Any]], summary: dict[str, Any]) -> Non
                 "top_1": summary["top_1"],
                 "top_3": summary["top_3"],
                 "top_5": summary["top_5"],
+                "payload_top_1": summary["payload_top_1"],
+                "payload_top_3": summary["payload_top_3"],
                 "misses": summary["misses"],
+                "payload_misses": summary["payload_misses"],
             },
             indent=2,
         )

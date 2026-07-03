@@ -187,6 +187,42 @@
         "product_keywords": ["flask", "gunicorn", "werkzeug", "http"]
       },
       "proof_goal": "Send a benign Jinja2 arithmetic expression and verify that the rendered result is returned."
+    },
+    {
+      "id": "generated:mini_httpd_empty_host_file_read",
+      "name": "mini_httpd empty Host file-read probe",
+      "description": "Generated Python validation tool for the mini_httpd CVE-2018-18778 empty-Host arbitrary file-read condition in an authorized lab.",
+      "provider": "generated_python",
+      "code_path": "code/mini_httpd_empty_host_file_read.py",
+      "risk": "lab-only safe vulnerability validation",
+      "safe_to_execute": true,
+      "tool_kind": "validation_capability",
+      "generated_by": "toolsmith_vulhub_seed",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "http",
+        "ports": ["8080"],
+        "product_keywords": ["mini_httpd", "http"]
+      },
+      "proof_goal": "Send an empty Host header request for /etc/passwd and verify only a short root-line proof."
+    },
+    {
+      "id": "generated:appweb_digest_auth_bypass_probe",
+      "name": "AppWeb digest auth-bypass probe",
+      "description": "Generated Python validation tool for the AppWeb CVE-2018-8715 digest-auth bypass condition in an authorized lab.",
+      "provider": "generated_python",
+      "code_path": "code/appweb_digest_auth_bypass_probe.py",
+      "risk": "lab-only safe vulnerability validation",
+      "safe_to_execute": true,
+      "tool_kind": "validation_capability",
+      "generated_by": "toolsmith_vulhub_seed",
+      "allowed_execution_modes": ["safe", "aggressive_lab"],
+      "match": {
+        "service": "http",
+        "ports": ["8080"],
+        "product_keywords": ["appweb", "embedthis", "http"]
+      },
+      "proof_goal": "Send the documented incomplete Digest Authorization header and verify a 200 response/session signal."
     }
   ]
 }

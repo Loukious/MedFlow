@@ -158,6 +158,29 @@ Create a tool from explicit files:
 
 Before a generated tool is cached, the project validates that the Python file defines `run(context)`, only imports from the small allowed import set, and avoids blocked dynamic execution primitives. This is not a full sandbox yet; it is the current review/cache layer before moving generated tools into an isolated execution environment.
 
+## Vulhub Lab Set
+
+Vulhub labs are managed through:
+
+```bash
+sudo .venv/bin/python scripts/manage_vulhub_labs.py status
+sudo .venv/bin/python scripts/manage_vulhub_labs.py up --pull
+sudo .venv/bin/python scripts/manage_vulhub_labs.py test
+sudo .venv/bin/python scripts/manage_vulhub_labs.py down
+```
+
+Configured labs live in:
+
+```text
+config/vulhub_labs.json
+```
+
+The manager starts each selected Vulhub scenario on its own internal Docker network with container restart set to `unless-stopped` and host port publishing disabled. The current seeded test set is:
+
+- `flask_ssti`: validates benign Jinja2 arithmetic rendering.
+- `mini_httpd_file_read`: validates the empty-Host file-read condition with a short `/etc/passwd` proof.
+- `appweb_auth_bypass`: validates the incomplete Digest Authorization bypass signal.
+
 ## Tool Boundary
 
 The deployable LangGraph agent does not depend on Docker. Docker is only used by the local lab setup CLI.

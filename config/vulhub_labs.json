@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "labs": {
+    "flask_ssti": {
+      "path": "vulhub/flask/ssti",
+      "project": "medflow_vulhub_flask_ssti",
+      "services": ["web"],
+      "ports": [8000],
+      "goal": "Assess an authorized Vulhub Flask/Jinja2 SSTI lab target and validate safe web attack paths"
+    },
+    "mini_httpd_file_read": {
+      "path": "vulhub/mini_httpd/CVE-2018-18778",
+      "project": "medflow_vulhub_mini_httpd_file_read",
+      "services": ["web"],
+      "ports": [8080],
+      "goal": "Assess an authorized Vulhub mini_httpd file-read lab target and validate safe web attack paths"
+    },
+    "appweb_auth_bypass": {
+      "path": "vulhub/appweb/CVE-2018-8715",
+      "project": "medflow_vulhub_appweb_auth_bypass",
+      "services": ["web"],
+      "ports": [8080],
+      "goal": "Assess an authorized Vulhub AppWeb auth-bypass lab target and validate safe web attack paths"
+    }
+  }
+}

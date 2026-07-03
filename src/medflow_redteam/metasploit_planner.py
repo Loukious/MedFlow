@@ -57,7 +57,7 @@ def infer_target_uri(capability: dict[str, Any], service: dict[str, Any]) -> str
     uri = str(service.get("target_uri") or service.get("path") or "").strip()
     if uri:
         return uri if uri.startswith("/") else f"/{uri}"
-    return "/"
+    return ""
 
 
 def select_payload_candidates(capability: dict[str, Any], service: dict[str, Any] | None = None) -> list[PayloadCandidate]:

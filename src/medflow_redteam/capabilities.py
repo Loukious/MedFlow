@@ -88,11 +88,16 @@ WEAK_PRODUCT_KEYWORDS = {
 }
 
 
+WEAK_TECHNOLOGY_SIGNALS = {"bootstrap", "express", "jquery"}
+
+
 def has_blocked_provider_indicator(capability: dict[str, Any]) -> bool:
     runner = capability.get("runner")
     if runner not in {"metasploit_module", "nuclei_template"}:
         return False
     module_path = str(capability.get("module_path") or "")
+    if runner == "metasploit_module" and not module_path.startswith(("exploit/", "auxiliary/")):
+        return True
     if runner == "metasploit_module" and re.match(r"^exploit/[^/]+/(fileformat|browser)/", module_path):
         return True
     text = " ".join(
@@ -227,6 +232,12 @@ def web_evidence_text(web_routes: dict[str, Any] | None) -> str:
             value = route.get(key)
             if value:
                 values.append(str(value))
+    for fingerprint in (web_routes or {}).get("web_fingerprints", []):
+        for key in ["server", "powered_by"]:
+            value = fingerprint.get(key)
+            if value:
+                values.append(str(value))
+        values.extend(str(item) for item in fingerprint.get("technology_signals", []))
     return " ".join(values).lower()
 
 
@@ -239,8 +250,17 @@ def web_route_score(capability: dict[str, Any], service: dict[str, str], web_rou
         for key in ["id", "name", "description", "template_path", "module_path"]
     ).lower()
     routes = web_routes.get("web_routes") or []
+    fingerprints = web_routes.get("web_fingerprints") or []
     score = 0
     reasons: list[str] = []
+    for signal in sorted({str(item).lower() for fp in fingerprints for item in fp.get("technology_signals", [])}):
+        if signal and keyword_matches(signal, capability_text):
+            if signal in WEAK_TECHNOLOGY_SIGNALS:
+                score += 4
+                reasons.append(f"weak technology signal {signal} matched")
+            else:
+                score += 45
+                reasons.append(f"technology signal {signal} matched")
     service_text = str((capability.get("match") or {}).get("service", "")).lower()
     observed_service = normalize_text(service.get("service"))
     observed_port = normalize_text(service.get("port"))

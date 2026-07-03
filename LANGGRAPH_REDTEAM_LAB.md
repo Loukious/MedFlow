@@ -219,6 +219,7 @@ The Metasploit selection benchmark is in:
 ```text
 config/benchmarks/vulhub_metasploit_selection.json
 scripts/benchmark_metasploit_selection.py
+scripts/benchmark_live_vulhub_metasploit.py
 ```
 
 The benchmark labels expected Metasploit modules and acceptable payloads for scoring only. The selector does not receive the expected module as an instruction; it ranks modules from observed service evidence, optional CVE intelligence, web titles/routes, graph memory, and provider inventory metadata. Payload planning is handled separately by `src/medflow_redteam/metasploit_planner.py`, which chooses module options and payload candidates from module metadata, platform/architecture hints, default payloads, and observed service data.
@@ -228,6 +229,14 @@ Run the benchmark:
 ```bash
 python scripts/benchmark_metasploit_selection.py --mode both --top-k 10 --save-report
 ```
+
+Run live exploit-proof validation against currently running Vulhub containers:
+
+```bash
+python scripts/benchmark_live_vulhub_metasploit.py --labs all --max-capabilities 4 --loop --max-rounds 3 --max-tools 8 --save-report
+```
+
+The live benchmark does not pass expected CVEs or modules into the campaign. Expected modules are scoring labels only. Each run starts from observed services and web fingerprints, then records whether the selected Metasploit path produced `exploited=True` proof.
 
 Modes:
 
@@ -248,6 +257,7 @@ The benchmark output now reports:
 - expected modules
 - top module candidates
 - misses and payload misses in the JSON summary
+- live selected modules, payload/option attempts, and proof lines in `live_vulhub_metasploit_*.json`
 
 This is the baseline for a SkillOpt-style improvement loop: run scored lab rollouts, inspect misses and weak rankings, update the ranking/skill policy, and keep changes only when held-out benchmark performance improves.
 
@@ -333,6 +343,7 @@ Current live validation notes:
 
 - `metabase_cve_2023_38646` produced a positive Metasploit check: the selected `metabase_setup_token_rce` module reported target version `0.46.6` as vulnerable.
 - With `--metasploit-action exploit`, `metabase_cve_2023_38646` produced actual exploit proof in the isolated Vulhub lab: Metasploit opened a command shell session and the runner attempted cleanup with `sessions -K`.
+- Live Vulhub proof is currently confirmed for Metabase CVE-2023-38646, CouchDB CVE-2017-12636, Shiro CVE-2016-4437, Solr CVE-2019-17558, Struts S2-045, and Struts S2-057.
 - `drupal_cve_2018_7600` selected Drupal-specific modules, including Drupalgeddon2, but the current Vulhub container redirected to Drupal installation state during manual validation, so it needs lab setup/fixture work before it is a reliable exploit-proof benchmark.
 
 ## Commands

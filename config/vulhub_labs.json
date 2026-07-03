@@ -21,6 +21,83 @@
       "services": ["web"],
       "ports": [8080],
       "goal": "Assess an authorized Vulhub AppWeb auth-bypass lab target and validate safe web attack paths"
+    },
+    "metabase_cve_2023_38646": {
+      "path": "vulhub/metabase/CVE-2023-38646",
+      "project": "medflow_vulhub_metabase_cve_2023_38646",
+      "services": ["web"],
+      "ports": [3000],
+      "goal": "Assess an authorized Vulhub Metabase lab target and identify viable validation paths"
+    },
+    "couchdb_cve_2017_12636": {
+      "path": "vulhub/couchdb/CVE-2017-12636",
+      "project": "medflow_vulhub_couchdb_cve_2017_12636",
+      "services": ["couchdb"],
+      "ports": [5984],
+      "goal": "Assess an authorized Vulhub CouchDB lab target and identify viable validation paths"
+    },
+    "couchdb_cve_2022_24706": {
+      "path": "vulhub/couchdb/CVE-2022-24706",
+      "project": "medflow_vulhub_couchdb_cve_2022_24706",
+      "services": ["couchdb"],
+      "ports": [5984],
+      "goal": "Assess an authorized Vulhub CouchDB lab target and identify viable validation paths"
+    },
+    "struts2_s2_061": {
+      "path": "vulhub/struts2/s2-061",
+      "project": "medflow_vulhub_struts2_s2_061",
+      "services": ["struts2"],
+      "ports": [8080],
+      "goal": "Assess an authorized Vulhub Apache Struts2 lab target and identify viable validation paths"
+    },
+    "struts2_s2_032": {
+      "path": "vulhub/struts2/s2-032",
+      "project": "medflow_vulhub_struts2_s2_032",
+      "services": ["struts2"],
+      "ports": [8080],
+      "goal": "Assess an authorized Vulhub Apache Struts2 lab target and identify viable validation paths"
+    },
+    "struts2_s2_045": {
+      "path": "vulhub/struts2/s2-045",
+      "project": "medflow_vulhub_struts2_s2_045",
+      "services": ["struts2"],
+      "ports": [8080],
+      "goal": "Assess an authorized Vulhub Apache Struts2 lab target and identify viable validation paths"
+    },
+    "struts2_s2_057": {
+      "path": "vulhub/struts2/s2-057",
+      "project": "medflow_vulhub_struts2_s2_057",
+      "services": ["struts2"],
+      "ports": [8080],
+      "goal": "Assess an authorized Vulhub Apache Struts2 lab target and identify viable validation paths"
+    },
+    "shiro_cve_2016_4437": {
+      "path": "vulhub/shiro/CVE-2016-4437",
+      "project": "medflow_vulhub_shiro_cve_2016_4437",
+      "services": ["web"],
+      "ports": [8080],
+      "goal": "Assess an authorized Vulhub Apache Shiro lab target and identify viable validation paths"
+    },
+    "rocketmq_cve_2023_33246": {
+      "path": "vulhub/rocketmq/CVE-2023-33246",
+      "project": "medflow_vulhub_rocketmq_cve_2023_33246",
+      "services": ["rocketmq"],
+      "ports": [9876, 10911, 5005],
+      "goal": "Assess an authorized Vulhub Apache RocketMQ lab target and identify viable validation paths"
+    },
+    "solr_cve_2019_17558": {
+      "path": "vulhub/solr/CVE-2019-17558",
+      "project": "medflow_vulhub_solr_cve_2019_17558",
+      "services": ["solr"],
+      "ports": [8983],
+      "goal": "Assess an authorized Vulhub Apache Solr lab target and identify viable validation paths"
+    },
+    "drupal_cve_2018_7600": {
+      "path": "vulhub/drupal/CVE-2018-7600",
+      "project": "medflow_vulhub_drupal_cve_2018_7600",
+      "services": ["web"],
+      "ports": [80],
+      "goal": "Assess an authorized Vulhub Drupal lab target and identify viable validation paths"
     }
   }
 }

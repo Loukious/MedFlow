@@ -1,0 +1,218 @@
+{
+  "schema_version": 1,
+  "description": "Vulhub labs with local Metasploit CVE coverage. Expected modules are benchmark labels only, not runtime attack configuration.",
+  "labs": [
+    {
+      "name": "metabase_cve_2023_38646",
+      "vulhub_path": "metabase/CVE-2023-38646",
+      "service": {
+        "port": "3000",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Metabase 0.46.6 setup token endpoint"
+      },
+      "cves": [
+        "CVE-2023-38646"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/linux/http/metabase_setup_token_rce"
+      ],
+      "candidate_modules": [
+        "exploit/linux/http/metabase_setup_token_rce"
+      ]
+    },
+    {
+      "name": "couchdb_cve_2017_12636",
+      "vulhub_path": "couchdb/CVE-2017-12636",
+      "service": {
+        "port": "5984",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache CouchDB 1.6.0 HTTP API"
+      },
+      "cves": [
+        "CVE-2017-12635",
+        "CVE-2017-12636"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/linux/http/apache_couchdb_cmd_exec"
+      ],
+      "candidate_modules": [
+        "auxiliary/scanner/couchdb/couchdb_enum",
+        "exploit/linux/http/apache_couchdb_cmd_exec"
+      ]
+    },
+    {
+      "name": "couchdb_cve_2022_24706",
+      "vulhub_path": "couchdb/CVE-2022-24706",
+      "service": {
+        "port": "5984",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache CouchDB 3.2.1 HTTP API Erlang distribution"
+      },
+      "cves": [
+        "CVE-2022-24706"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/apache_couchdb_erlang_rce"
+      ],
+      "candidate_modules": [
+        "exploit/multi/http/apache_couchdb_erlang_rce"
+      ]
+    },
+    {
+      "name": "struts2_s2_061",
+      "vulhub_path": "struts2/s2-061",
+      "service": {
+        "port": "8080",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache Struts2 2.5.25 showcase OGNL"
+      },
+      "cves": [
+        "CVE-2020-17530"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/struts2_multi_eval_ognl"
+      ],
+      "candidate_modules": [
+        "exploit/multi/http/struts2_multi_eval_ognl"
+      ]
+    },
+    {
+      "name": "struts2_s2_032",
+      "vulhub_path": "struts2/s2-032",
+      "service": {
+        "port": "8080",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache Struts2 2.3.28 DMI OGNL"
+      },
+      "cves": [
+        "CVE-2016-3081"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/struts_dmi_exec"
+      ],
+      "candidate_modules": [
+        "exploit/multi/http/struts_dmi_exec"
+      ]
+    },
+    {
+      "name": "struts2_s2_045",
+      "vulhub_path": "struts2/s2-045",
+      "service": {
+        "port": "8080",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache Struts2 2.3.30 Jakarta multipart parser"
+      },
+      "cves": [
+        "CVE-2017-5638"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/struts2_content_type_ognl"
+      ],
+      "candidate_modules": [
+        "exploit/multi/http/struts2_content_type_ognl"
+      ]
+    },
+    {
+      "name": "struts2_s2_057",
+      "vulhub_path": "struts2/s2-057",
+      "service": {
+        "port": "8080",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache Struts2 2.3.34 showcase namespace OGNL"
+      },
+      "cves": [
+        "CVE-2018-11776"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/struts2_namespace_ognl"
+      ],
+      "candidate_modules": [
+        "exploit/multi/http/struts2_namespace_ognl"
+      ]
+    },
+    {
+      "name": "shiro_cve_2016_4437",
+      "vulhub_path": "shiro/CVE-2016-4437",
+      "service": {
+        "port": "8080",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache Shiro 1.2.4 rememberMe cookie"
+      },
+      "cves": [
+        "CVE-2016-4437"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/shiro_rememberme_v124_deserialize"
+      ],
+      "candidate_modules": [
+        "exploit/multi/http/shiro_rememberme_v124_deserialize"
+      ]
+    },
+    {
+      "name": "rocketmq_cve_2023_33246",
+      "vulhub_path": "rocketmq/CVE-2023-33246",
+      "service": {
+        "port": "9876",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache RocketMQ 5.1.0 nameserver broker remoting"
+      },
+      "cves": [
+        "CVE-2023-33246"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/apache_rocketmq_update_config"
+      ],
+      "candidate_modules": [
+        "auxiliary/scanner/misc/rocketmq_version",
+        "exploit/multi/http/apache_rocketmq_update_config"
+      ]
+    },
+    {
+      "name": "solr_cve_2019_17558",
+      "vulhub_path": "solr/CVE-2019-17558",
+      "service": {
+        "port": "8983",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Apache Solr 8.2.0 VelocityResponseWriter"
+      },
+      "cves": [
+        "CVE-2019-17558"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/multi/http/solr_velocity_rce"
+      ],
+      "candidate_modules": [
+        "exploit/multi/http/solr_velocity_rce"
+      ]
+    },
+    {
+      "name": "drupal_cve_2018_7600",
+      "vulhub_path": "drupal/CVE-2018-7600",
+      "service": {
+        "port": "80",
+        "protocol": "tcp",
+        "service": "http",
+        "version": "Drupal 8.5.0 Drupalgeddon2 Forms API"
+      },
+      "cves": [
+        "CVE-2018-7600"
+      ],
+      "expected_metasploit_modules": [
+        "exploit/unix/webapp/drupal_drupalgeddon2"
+      ],
+      "candidate_modules": [
+        "exploit/unix/webapp/drupal_drupalgeddon2"
+      ]
+    }
+  ]
+}

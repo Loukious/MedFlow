@@ -47,6 +47,34 @@ def keyword_matches(keyword: str, observed_text: str) -> bool:
     return lowered in observed_text
 
 
+WEAK_PRODUCT_KEYWORDS = {
+    "apache",
+    "api",
+    "auth",
+    "base",
+    "code",
+    "command",
+    "content",
+    "endpoint",
+    "exec",
+    "execution",
+    "file",
+    "forms",
+    "httpd",
+    "injection",
+    "lang",
+    "language",
+    "parser",
+    "property",
+    "remote",
+    "request",
+    "setup",
+    "token",
+    "type",
+    "webapp",
+}
+
+
 def has_blocked_provider_indicator(capability: dict[str, Any]) -> bool:
     runner = capability.get("runner")
     if runner not in {"metasploit_module", "nuclei_template"}:
@@ -91,7 +119,8 @@ def capability_match_score(
     observed_port = normalize_text(service.get("port"))
     observed_service = normalize_text(service.get("service"))
     observed_version = normalize_text(service.get("version"))
-    observed_text = f"{observed_service} {observed_version}"
+    observed_cves = {normalize_text(str(cve)) for cve in service.get("cves", [])}
+    observed_text = f"{observed_service} {observed_version} {web_evidence_text(web_routes)} {' '.join(sorted(observed_cves))}"
     score = 0
     reasons: list[str] = []
     primary_matched = False
@@ -111,11 +140,22 @@ def capability_match_score(
     if (configured_ports or configured_service) and not primary_matched:
         return 0, []
 
+    distinctive_keyword_matches = 0
     for keyword in match.get("product_keywords", []):
         lowered = normalize_text(str(keyword))
         if keyword_matches(lowered, observed_text):
-            score += 10
+            if lowered in {observed_service, "http", "https", "tcp", "udp"}:
+                score += 4
+            elif lowered in WEAK_PRODUCT_KEYWORDS:
+                score += 6
+            else:
+                score += 22
+                distinctive_keyword_matches += 1
             reasons.append(f"keyword {lowered} matched")
+
+    if distinctive_keyword_matches:
+        score += 35
+        reasons.append("distinctive product evidence matched")
 
     for pattern in match.get("version_patterns", []):
         if re.search(pattern, observed_text, flags=re.IGNORECASE):
@@ -124,8 +164,8 @@ def capability_match_score(
 
     for cve in capability.get("cves", []):
         if cve and cve.lower() in observed_text:
-            score += 20
-            reasons.append(f"CVE {cve} appeared in service text")
+            score += 60 if cve.lower() in observed_cves else 20
+            reasons.append(f"CVE {cve} matched observed target intelligence")
 
     if capability.get("runner") == "generated_python_tool":
         score += 50
@@ -160,6 +200,18 @@ def capability_match_score(
     reasons.extend(memory_reasons)
 
     return score, reasons
+
+
+def web_evidence_text(web_routes: dict[str, Any] | None) -> str:
+    if not web_routes:
+        return ""
+    values: list[str] = []
+    for route in (web_routes or {}).get("web_routes", []):
+        for key in ["url", "title", "server", "powered_by", "content_type", "artifact_signal"]:
+            value = route.get(key)
+            if value:
+                values.append(str(value))
+    return " ".join(values).lower()
 
 
 def web_route_score(capability: dict[str, Any], service: dict[str, str], web_routes: dict[str, Any] | None) -> tuple[int, list[str]]:

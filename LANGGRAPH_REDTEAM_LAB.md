@@ -175,11 +175,72 @@ Configured labs live in:
 config/vulhub_labs.json
 ```
 
-The manager starts each selected Vulhub scenario on its own internal Docker network with container restart set to `unless-stopped` and host port publishing disabled. The current seeded test set is:
+The manager starts each selected Vulhub scenario on its own internal Docker network with container restart set to `unless-stopped` and host port publishing disabled. Metasploitable3 is managed separately and is also kept at `restart=unless-stopped`.
+
+The current always-light seeded validation set is:
 
 - `flask_ssti`: validates benign Jinja2 arithmetic rendering.
 - `mini_httpd_file_read`: validates the empty-Host file-read condition with a short `/etc/passwd` proof.
 - `appweb_auth_bypass`: validates the incomplete Digest Authorization bypass signal.
+
+Additional Vulhub scenarios are configured for broader Metasploit-selection testing:
+
+- `metabase_cve_2023_38646`
+- `couchdb_cve_2017_12636`
+- `couchdb_cve_2022_24706`
+- `struts2_s2_061`
+- `struts2_s2_032`
+- `struts2_s2_045`
+- `struts2_s2_057`
+- `shiro_cve_2016_4437`
+- `rocketmq_cve_2023_33246`
+- `solr_cve_2019_17558`
+- `drupal_cve_2018_7600`
+
+The currently practical multi-lab bring-up command is:
+
+```bash
+sudo .venv/bin/python scripts/manage_vulhub_labs.py up \
+  metabase_cve_2023_38646 \
+  couchdb_cve_2017_12636 \
+  struts2_s2_045 \
+  shiro_cve_2016_4437 \
+  solr_cve_2019_17558 \
+  drupal_cve_2018_7600 \
+  --pull
+```
+
+Those six plus the three light validators give nine running Vulhub targets. The remaining configured labs can be started by name when needed, but some are heavier or have more moving parts.
+
+## Metasploit Selection Benchmark
+
+The Metasploit selection benchmark is in:
+
+```text
+config/benchmarks/vulhub_metasploit_selection.json
+scripts/benchmark_metasploit_selection.py
+```
+
+The benchmark labels expected Metasploit modules for scoring only. The selector does not receive the expected module as an instruction; it ranks modules from observed service evidence, optional CVE intelligence, web titles/routes, graph memory, and provider inventory metadata.
+
+Run the benchmark:
+
+```bash
+python scripts/benchmark_metasploit_selection.py --mode both --top-k 10 --save-report
+```
+
+Modes:
+
+- `service`: uses only service/product evidence, similar to what active recon can observe.
+- `cve`: adds known CVEs to the observed service record, modeling what an NVD/version-enrichment step should provide later.
+- `both`: runs both modes.
+
+Current verified benchmark result:
+
+- `service` mode: expected module was in top 5 for all 11 labs.
+- `cve` mode: expected module was top 1 for all 11 labs.
+
+This is the baseline for a SkillOpt-style improvement loop: run scored lab rollouts, inspect misses and weak rankings, update the ranking/skill policy, and keep changes only when held-out benchmark performance improves.
 
 ## Tool Boundary
 
@@ -216,7 +277,7 @@ python scripts/build_capability_inventory.py --skip-network
 
 The inventory builder currently produced about 19k provider capabilities:
 
-- Metasploit metadata: module paths, CVEs, service hints, ports, and safety metadata.
+- Metasploit metadata: module paths, CVEs extracted from Ruby module references, service hints, ports, product keywords, and safety metadata.
 - Nuclei templates: template IDs, tags, CVEs, severity, and HTTP/service hints.
 - Nmap NSE scripts: categories, service/port hints, and runtime safety classification.
 

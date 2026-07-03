@@ -49,6 +49,46 @@ def extract_ruby_array(text: str, key: str) -> list[str]:
     return sorted(set(re.findall(r"['\"]([^'\"]+)['\"]", match.group(1))))
 
 
+def extract_cves(text: str) -> list[str]:
+    cves = set()
+    for year, number in re.findall(r"CVE[-_ ]?(\d{4})[-_ ]?(\d{3,7})", text, flags=re.IGNORECASE):
+        cves.add(f"CVE-{year}-{number}")
+    for year, number in re.findall(
+        r"\[\s*['\"]CVE['\"]\s*,\s*['\"](\d{4})[-_ ]?(\d{3,7})['\"]\s*\]",
+        text,
+        flags=re.IGNORECASE,
+    ):
+        cves.add(f"CVE-{year}-{number}")
+    return sorted(cves)
+
+
+def words_from_module_path(module_path: str, name: str, limit: int = 12) -> list[str]:
+    ignored = {
+        "exploit",
+        "auxiliary",
+        "scanner",
+        "multi",
+        "linux",
+        "unix",
+        "windows",
+        "http",
+        "https",
+        "tcp",
+        "udp",
+        "cmd",
+        "exec",
+        "rce",
+        "cve",
+    }
+    tokens = []
+    for token in re.split(r"[^a-zA-Z0-9]+", f"{module_path} {name}"):
+        lowered = token.lower()
+        if len(lowered) < 3 or lowered in ignored or lowered.isdigit():
+            continue
+        tokens.append(lowered)
+    return sorted(set(tokens))[:limit]
+
+
 def service_from_path_or_text(path: Path, text: str) -> str:
     lowered = f"{path.as_posix()} {text[:2000]}".lower()
     for service in ["ftp", "ssh", "smb", "mysql", "irc", "http", "smtp", "telnet", "postgres"]:
@@ -76,6 +116,21 @@ def ports_from_text(text: str) -> list[str]:
     return sorted(ports)
 
 
+def platform_service_from_module(module_path: str, path: Path, text: str) -> str:
+    lowered = module_path.lower()
+    if "/http/" in lowered or "/webapp/" in lowered:
+        return "http"
+    if "/smb/" in lowered:
+        return "netbios-ssn"
+    if "/ftp/" in lowered:
+        return "ftp"
+    if "/mysql/" in lowered:
+        return "mysql"
+    if "/ssh/" in lowered:
+        return "ssh"
+    return service_from_path_or_text(path, text)
+
+
 def has_blocked_token(text: str, blocked_terms: set[str]) -> bool:
     tokens = set(re.split(r"[^a-z0-9]+", text.lower()))
     return bool(tokens & blocked_terms)
@@ -88,11 +143,8 @@ def metasploit_capabilities(repo: Path, limit: int | None = None) -> list[dict[s
     for path in files[: limit or None]:
         rel = path.relative_to(repo)
         text = path.read_text(encoding="utf-8", errors="ignore")
-        cves = extract_ruby_array(text, "References")
-        cves = [item for item in cves if item.upper().startswith("CVE-")]
         name = extract_ruby_string(text, "Name") or path.stem.replace("_", " ")
         description = extract_ruby_string(text, "Description")
-        service = service_from_path_or_text(path, text)
         ports = ports_from_text(text)
         module_dir = rel.parts[1] if len(rel.parts) > 1 else "module"
         module_type = {"exploits": "exploit", "auxiliary": "auxiliary"}.get(module_dir, module_dir.rstrip("s"))
@@ -102,6 +154,8 @@ def metasploit_capabilities(repo: Path, limit: int | None = None) -> list[dict[s
         if module_parts:
             module_parts[0] = {"exploits": "exploit"}.get(module_parts[0], module_parts[0])
         module_path = "/".join(module_parts)
+        cves = extract_cves(text)
+        service = platform_service_from_module(module_path, path, text)
         unsafe_terms = {
             "brute",
             "cred",
@@ -145,7 +199,11 @@ def metasploit_capabilities(repo: Path, limit: int | None = None) -> list[dict[s
                 "match": {
                     "service": service,
                     "ports": ports,
-                    "product_keywords": [word for word in [service, path.stem.split("_")[0]] if word],
+                    "product_keywords": [
+                        word
+                        for word in [service, *words_from_module_path(module_path, name)]
+                        if word
+                    ],
                 },
             }
         )

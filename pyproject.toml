@@ -20,6 +20,8 @@ dependencies = [
   "kagglehub",
   "streamlit",
   "pypdf",
+  "fastapi",
+  "uvicorn[standard]",
 ]
 
 [project.scripts]

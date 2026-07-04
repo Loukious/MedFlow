@@ -10,3 +10,5 @@ pandas
 kagglehub
 streamlit
 pypdf
+fastapi
+uvicorn[standard]

@@ -51,7 +51,7 @@ def load_generated_tool_specs() -> list[dict[str, Any]]:
                     "provider": item.get("provider", "generated_python"),
                     "runner": "generated_python_tool",
                     "source": str(path),
-                    "execution": "cached_generated_python",
+                    "execution": "on_demand_generated_python",
                 }
             )
     return specs

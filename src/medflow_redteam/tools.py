@@ -15,6 +15,7 @@ from urllib.request import Request, urlopen
 
 from .capabilities import select_capabilities_for_services
 from .config_loader import load_lab_config
+from .generated_tools import DATA_TOOL_DIR, execute_generated_tool
 from .metasploit_runner import run_metasploit_module
 
 
@@ -431,14 +432,22 @@ def run_one_selected_capability(
             "verified": False,
             "reason": f"Generated tool is not allowed in execution mode {execution_mode}.",
         }
-    else:
+    elif not generated_tool_from_data_cache(selected):
         result = {
-            "allowed": True,
+            "allowed": False,
             "exploited": False,
             "verified": False,
-            "metadata_only": True,
-            "reason": "Generated Python tools are disabled in this build; use provider-backed capabilities such as Metasploit.",
+            "reason": "Generated tool execution is limited to on-demand tools stored under data/generated_tools.",
         }
+    else:
+        result = execute_generated_tool(
+            validate_target(target),
+            selected,
+            {
+                "execution_mode": execution_mode,
+                "matched_service": selected.get("matched_service") or {},
+            },
+        )
     result["selected_exploit_id"] = exploit_id
     result["selected_exploit_name"] = selected.get("name")
     result["selection_score"] = selected.get("score")
@@ -453,6 +462,12 @@ def run_one_selected_capability(
 def generated_tool_allowed_in_mode(capability: dict[str, Any], execution_mode: str) -> bool:
     allowed_modes = capability.get("allowed_execution_modes") or ["safe"]
     return execution_mode in allowed_modes
+
+
+def generated_tool_from_data_cache(capability: dict[str, Any]) -> bool:
+    source = str(capability.get("source") or "")
+    code_path = str(capability.get("code_path") or "")
+    return str(DATA_TOOL_DIR) in source or source.endswith("data/generated_tools/tool_specs.json") or code_path.startswith("code/")
 
 
 def status_counts(results: list[dict[str, Any]]) -> dict[str, int]:

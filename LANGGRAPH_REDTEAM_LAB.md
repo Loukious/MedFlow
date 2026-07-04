@@ -134,16 +134,16 @@ Create a deterministic TCP banner tool:
 .venv/bin/python scripts/create_generated_tool.py --id redis_banner --template tcp_banner --service redis --port 6379
 ```
 
+Search for a reusable generated tool in graph/data cache:
+
+```bash
+.venv/bin/python scripts/create_generated_tool.py --lookup "redis banner port 6379"
+```
+
 Create a tool from an LLM prompt:
 
 ```bash
 .venv/bin/python scripts/create_generated_tool.py --provider llama --prompt "Create a safe observation tool for Redis INFO exposure on port 6379"
-```
-
-Create a tool from explicit files:
-
-```bash
-.venv/bin/python scripts/create_generated_tool.py --spec spec.json --code tool.py
 ```
 
 Before an on-demand generated tool is stored, the project validates that the Python file defines `run(context)`, only imports from the small allowed import set, and avoids blocked dynamic execution primitives. This is not a full sandbox yet; it is the current review/cache layer before moving generated tools into an isolated execution environment.

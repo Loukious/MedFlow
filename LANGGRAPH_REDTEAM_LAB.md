@@ -5,13 +5,12 @@ This milestone implementation keeps the red-team code separate from the Streamli
 ## What It Builds
 
 - `config/redteam_lab.json` defines lab target safety, scan ports, and Docker lab settings.
-- `config/generated_tools/tool_specs.json` defines seed generated-tool metadata and match rules.
-- `config/generated_tools/code/` stores reviewed seed generated Python tools.
-- `data/generated_tools/` stores locally generated cached tools created during experimentation.
+- `config/generated_tools/tool_specs.json` is intentionally empty; no generated Python tools are committed as baseline capabilities.
+- `data/generated_tools/` stores on-demand generated tools created during experimentation.
 - `scripts/build_capability_inventory.py` builds a provider-backed capability inventory from Metasploit metadata, Nuclei templates, and local Nmap NSE scripts.
 - `data/capabilities/capability_inventory.json` stores the generated capability inventory.
 - `src/medflow_redteam/docker_lab.py` manages the Docker lab.
-- `src/medflow_redteam/tools.py` is a compatibility dispatcher that calls cached generated tools and keeps target safety checks/parsers.
+- `src/medflow_redteam/tools.py` keeps target safety checks, runtime recon helpers, parsers, and provider-backed execution dispatch.
 - `src/medflow_redteam/langgraph_lab.py` defines the LangGraph workflow.
 - `src/medflow_redteam/campaign.py` defines the role-separated multi-agent campaign workflow.
 - `scripts/run_langgraph_redteam_lab.py` is the CLI entry point.
@@ -36,11 +35,11 @@ The launcher also requests localhost port bindings for convenience, but in this 
 
 The LangGraph lab workflow runs these nodes in order:
 
-1. `recon_connectivity`: calls the cached generated TCP connectivity tool.
-2. `recon_nmap`: calls the cached generated Nmap service discovery tool.
-3. `validate_safe_scripts`: optionally calls the cached generated Nmap default/safe script tool against open ports only.
-4. `probe_http`: calls the cached generated HTTP probe tool.
-5. `select_exploit_tool`: uses observed service evidence to choose matching capabilities from the generated inventory plus generated-tool cache.
+1. `recon_connectivity`: runs the runtime TCP connectivity check.
+2. `recon_nmap`: runs runtime Nmap service discovery.
+3. `validate_safe_scripts`: optionally runs Nmap default/safe scripts against open ports only.
+4. `probe_http`: runs runtime HTTP probing.
+5. `select_exploit_tool`: uses observed service evidence to choose matching provider-backed capabilities from the inventory.
 6. `controlled_exploitation`: optionally executes the selected exploit tool.
 7. `retrieve_attack_context`: searches the MedFlow/ATT&CK vector knowledge bases.
 8. `safety_gate`: checks the planned content against the project safety boundary.
@@ -74,20 +73,14 @@ The role agents share retrieved ATT&CK/MedFlow context and prior agent outputs. 
 
 The exploitation phase is opt-in. The graph first chooses from the generated capability inventory using tool output. The current inventory sources are:
 
-- Generated Python tools from `config/generated_tools/` and `data/generated_tools/`.
+- On-demand generated Python tools from `data/generated_tools/`, when explicitly created.
 - Metasploit module metadata from `data/capability_sources/metasploit-framework`.
 - Nuclei template metadata from `data/capability_sources/nuclei-templates`.
 - Local Nmap NSE script metadata from `/usr/share/nmap/scripts`.
 
-The current seed generated tools are:
+There are no current seed generated tools. That means the action is not selected by a hidden hardcoded `if` in the execution step. LangGraph runs a selection node, records the matching reasons, and then passes selected provider capabilities to the execution node.
 
-- `generated:unrealircd_3281_rce`: selected when the scan evidence matches IRC/UnrealIRCd on port `6667`.
-- `generated:ftp_anonymous_access`: selected when FTP is exposed and validates whether anonymous access is enabled.
-- `generated:mysql_handshake_exposure`: selected when MySQL is exposed and validates unauthenticated handshake exposure.
-
-That means the action is not selected by a hidden hardcoded `if` in the execution step. LangGraph runs a selection node, records the matching reasons, and then passes the selected capabilities to the execution node. Automatic execution is limited to cached generated Python tools that pass the runtime safety filter.
-
-In the CLI output, `verified` means the exploit did more than connect to the service. The workflow caused the lab service to run the benign proof command defined in the generated tool spec, collected the command output, and confirmed the proof file existed inside the Docker target. A successful proof currently looks like `uid=1121(boba_fett) ...`, which shows command execution happened as the vulnerable service user.
+In the CLI output, `verified` means the selected provider path did more than connect to the service. For Metasploit exploit mode, `exploited` means the runner collected session or command-execution proof from an allowlisted isolated lab target.
 
 The current kill chain is intentionally small:
 
@@ -106,28 +99,25 @@ These values are now outside the agent logic:
 - Default target and allowed CIDRs.
 - Docker image, network, subnet, container name, container IP, hostname, published ports, and startup commands.
 - Default scan ports and HTTP probe ports.
-- Seed and locally generated Python tool capability entries.
+- Locally generated Python tool capability entries from `data/generated_tools/`, when explicitly created.
 - Capability match rules: service, ports, and product/version keywords.
-- Tool-specific proof markers, command templates, and evidence collection logic.
 - Provider-backed capability metadata from Metasploit, Nuclei, and Nmap NSE.
 
 The code still intentionally enforces:
 
 - Target validation against configured localhost names and CIDR allowlist.
-- Execution dispatch: automatic execution runs cached generated Python tools only.
-- External provider execution policy: provider inventory items can be selected/recommended, but they are metadata-only until a generated Python tool is cached for them.
+- Execution dispatch: Metasploit can run through the gated lab adapter; Nuclei and Nmap NSE provider entries are metadata-only for now.
 - Cleanup verification after exploitation.
 - Safety/reporting boundaries.
 
 ## Generated Python Tools
 
-Generated Python tools replace the older hardcoded internal runners and operational scanners. They are normal records with `runner: generated_python_tool` plus a Python file that exposes `run(context)`.
+Generated Python tools are intended to be created on demand by a Toolsmith-style workflow, then reused later when their metadata matches observed evidence. They are normal records with `runner: generated_python_tool` plus a Python file that exposes `run(context)`.
 
-Tracked, reviewed tools live in:
+The committed config registry is intentionally empty:
 
 ```text
 config/generated_tools/tool_specs.json
-config/generated_tools/code/
 ```
 
 Locally generated tools live in:
@@ -156,7 +146,7 @@ Create a tool from explicit files:
 .venv/bin/python scripts/create_generated_tool.py --spec spec.json --code tool.py
 ```
 
-Before a generated tool is cached, the project validates that the Python file defines `run(context)`, only imports from the small allowed import set, and avoids blocked dynamic execution primitives. This is not a full sandbox yet; it is the current review/cache layer before moving generated tools into an isolated execution environment.
+Before an on-demand generated tool is stored, the project validates that the Python file defines `run(context)`, only imports from the small allowed import set, and avoids blocked dynamic execution primitives. This is not a full sandbox yet; it is the current review/cache layer before moving generated tools into an isolated execution environment.
 
 ## Vulhub Lab Set
 
@@ -269,19 +259,19 @@ The deployable LangGraph agent does not depend on Docker. Docker is only used by
 The current deployable agent tools are:
 
 - TCP connectivity checks.
-- Generated service discovery.
-- Optional generated safe script validation.
+- Runtime service discovery.
+- Optional safe script validation.
 - HTTP probing.
 - Capability candidate selection from the generated inventory.
 - Metasploit module option and payload planning.
 - Gated Metasploit `plan`, `check`, and lab-only `exploit` execution for allowlisted lab targets.
-- Execution of cached generated Python tools.
+- On-demand generated Python tool support through `data/generated_tools/`.
 - Provider metadata ranking for Nmap NSE, Nuclei, and Metasploit sources.
 - MedFlow/ATT&CK retrieval.
 - Safety review.
 - LLM narrative reporting.
 
-MITRE ATT&CK is used for technique context and reporting, not exploit code. ATT&CK can keep the agent current on tactics, techniques, mitigations, and detection context, but execution requires either cached generated tools or an integration with a maintained exploit framework.
+MITRE ATT&CK is used for technique context and reporting, not exploit code. ATT&CK can keep the agent current on tactics, techniques, mitigations, and detection context, but execution requires an on-demand generated tool or an integration with a maintained exploit framework.
 
 ## Capability Inventory
 
@@ -303,22 +293,22 @@ The inventory builder currently produced about 19k provider capabilities:
 - Nuclei templates: template IDs, tags, CVEs, severity, and HTTP/service hints.
 - Nmap NSE scripts: categories, service/port hints, and runtime safety classification.
 
-The selector can recommend provider metadata. Cached generated Python tools can execute when their policy allows it. Metasploit modules are handled by a separate gated runner:
+The selector can recommend provider metadata. Metasploit modules are handled by a separate gated runner:
 
 - `safe` mode returns a Metasploit plan only.
 - `aggressive_lab` mode with `--metasploit-action check` runs `msfconsole check` against allowlisted lab targets.
 - `aggressive_lab` mode with `--metasploit-action exploit` can run the selected Metasploit module, prefer command/reverse/fetch payloads when available, infer `LHOST` and fetch-server addresses from the route to the target, collect session/command proof, and attempt session cleanup.
 
-Nuclei and NSE provider items are still metadata-only until a generated tool is cached for that behavior.
+Nuclei and NSE provider items are still metadata-only until an on-demand generated tool or dedicated adapter is created for that behavior.
 
 Execution policy:
 
-- In `safe` mode, only generated tools whose specs allow `safe` can run.
-- In `aggressive_lab` mode, generated tools whose specs allow `aggressive_lab` can run, and Metasploit modules can run the requested `--metasploit-action`.
+- In `safe` mode, generated tools are not auto-executed by the main campaign unless explicitly created and wired in.
+- In `aggressive_lab` mode, Metasploit modules can run the requested `--metasploit-action`.
 - Provider metadata from Nuclei and Nmap NSE is used for selection/recommendation, not direct execution.
 - Brute-force, credential, hash, password, persistence, and DoS behavior remains blocked by generation prompts, static validation, and generated-tool review.
 
-If a Nuclei or NSE provider capability has no cached generated Python tool, the runner reports it as metadata-only instead of executing it directly.
+If a Nuclei or NSE provider capability has no executable adapter, the runner reports it as metadata-only instead of executing it directly.
 
 Install optional external execution tools:
 
@@ -327,11 +317,11 @@ scripts/install_redteam_tools.sh nuclei
 scripts/install_redteam_tools.sh metasploit
 ```
 
-These external tools are useful for creating and testing generated tools. MedFlow executes Metasploit only through the gated lab adapter; Nuclei and Nmap NSE remain metadata-only unless represented by cached generated Python tools.
+These external tools are useful for creating and testing future generated tools. MedFlow executes Metasploit only through the gated lab adapter; Nuclei and Nmap NSE remain metadata-only unless represented by a future generated tool or adapter.
 
 ## Remaining Architecture Work
 
-The hardcoded internal runners and most provider adapters have been replaced by cached generated Python tools. Metasploit now has a gated adapter for planning, checking, and exploit-proof execution in isolated labs. The next architecture steps are:
+The hardcoded config-side generated tools have been removed. Metasploit now has a gated adapter for planning, checking, and exploit-proof execution in isolated labs. The next architecture steps are:
 
 - Run generated Python tools in a true isolated sandbox instead of the current static-validation cache layer.
 - Add catalog enrichment from external sources such as NVD/CVE feeds, Exploit-DB metadata, Metasploit module metadata, and Nuclei template metadata.
@@ -442,11 +432,9 @@ python scripts/analyze_identity_import.py identity-events.json --type logs
 python scripts/analyze_identity_import.py bloodhound-export.json --type bloodhound
 ```
 
-Generated Python tools live in a cache instead of hardcoded campaign branches:
+On-demand generated Python tools live in `data/generated_tools/` instead of committed config-side code:
 
 ```text
-config/generated_tools/tool_specs.json
-config/generated_tools/code/
 data/generated_tools/
 ```
 

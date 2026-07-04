@@ -3,14 +3,18 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import socket
+import subprocess
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from .capabilities import select_capabilities_for_services
 from .config_loader import load_lab_config
-from .generated_tools import execute_generated_tool, execute_generated_tool_by_role
 from .metasploit_runner import run_metasploit_module
 
 
@@ -58,60 +62,181 @@ def validate_target(target: str) -> str:
     return target
 
 
-def run_generated_operation(tool_id: str, target: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
-    target = validate_target(target)
-    return execute_generated_tool_by_role(tool_id, target, context or {})
-
-
-def generated_tool_result_to_tool_result(result: dict[str, Any], fallback_tool: str) -> ToolResult:
-    payload = result.get("tool_result") or {}
-    return ToolResult(
-        tool=str(payload.get("tool") or fallback_tool),
-        command=payload.get("command"),
-        returncode=int(payload.get("returncode") if payload.get("returncode") is not None else (0 if result.get("verified") else 1)),
-        stdout=str(payload.get("stdout") or result.get("proof_output") or ""),
-        stderr=str(payload.get("stderr") or result.get("reason") or ""),
-        elapsed_seconds=float(payload.get("elapsed_seconds") or result.get("elapsed_seconds") or 0.0),
-    )
-
-
 def tcp_connect_check(target: str, ports: list[int] | None = None, timeout: float = 1.0) -> dict:
+    target = validate_target(target)
     selected_ports = ports or default_ports_for_target(target)
-    result = run_generated_operation("tcp_connect_check", target, {"ports": selected_ports, "timeout": timeout})
-    return result.get("tcp", {})
+    output: dict[str, dict[str, Any]] = {}
+    for port in selected_ports:
+        started = time.perf_counter()
+        try:
+            with socket.create_connection((target, int(port)), timeout=timeout):
+                output[str(port)] = {"open": True, "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
+        except OSError as exc:
+            output[str(port)] = {"open": False, "error": str(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
+    return output
 
 
 def service_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
+    target = validate_target(target)
     selected_ports = ports or default_ports_for_target(target)
-    result = run_generated_operation("service_scan", target, {"ports": selected_ports, "profile": profile or "service_discovery"})
-    return generated_tool_result_to_tool_result(result, "service_scan")
+    command = ["nmap", "-sV", "-Pn", "--version-light", "--reason", "-p", ",".join(str(port) for port in selected_ports), target]
+    started = time.perf_counter()
+    proc = subprocess.run(command, text=True, capture_output=True, timeout=120, check=False)
+    return ToolResult("nmap", command, proc.returncode, proc.stdout, proc.stderr, time.perf_counter() - started)
 
 
 def safe_script_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
+    target = validate_target(target)
     selected_ports = ports or default_ports_for_target(target)
-    result = run_generated_operation("safe_script_scan", target, {"ports": selected_ports, "profile": profile or "safe_scripts"})
-    return generated_tool_result_to_tool_result(result, "safe_script_scan")
+    command = ["nmap", "-sC", "-Pn", "--script", "default,safe", "-p", ",".join(str(port) for port in selected_ports), target]
+    started = time.perf_counter()
+    proc = subprocess.run(command, text=True, capture_output=True, timeout=180, check=False)
+    return ToolResult("nmap", command, proc.returncode, proc.stdout, proc.stderr, time.perf_counter() - started)
 
 
 def http_probe(target: str, ports: list[int] | None = None) -> dict:
+    target = validate_target(target)
     selected_ports = ports or default_http_ports_for_target(target)
-    result = run_generated_operation("http_probe", target, {"ports": selected_ports})
-    return {"http_probe": result.get("http_probe", [])}
+    return {"http_probe": [request_summary(url_for(target, port)) for port in selected_ports]}
 
 
 def web_fingerprint(target: str, ports: list[int] | None = None) -> dict:
+    target = validate_target(target)
     selected_ports = ports or [80, 443, 8080, 8000, 5000, 8443]
-    result = run_generated_operation("web_fingerprint", target, {"ports": selected_ports})
-    return {"web_fingerprints": result.get("web_fingerprints", [])}
+    fingerprints = []
+    for port in selected_ports:
+        result = request_summary(url_for(target, port), include_body=True)
+        body = str(result.pop("body", ""))
+        headers = result.pop("headers", {})
+        if "error" in result and not body:
+            result["technology_signals"] = technology_signals(str(result.get("error", "")))
+        else:
+            result.update(
+                {
+                    "server": headers.get("server", ""),
+                    "powered_by": headers.get("x-powered-by", ""),
+                    "set_cookie_present": bool(headers.get("set-cookie")),
+                    "security_headers": {
+                        "content_security_policy": bool(headers.get("content-security-policy")),
+                        "strict_transport_security": bool(headers.get("strict-transport-security")),
+                        "x_frame_options": bool(headers.get("x-frame-options")),
+                        "x_content_type_options": bool(headers.get("x-content-type-options")),
+                    },
+                    "technology_signals": technology_signals(" ".join([json.dumps(headers), body[:4000]])),
+                }
+            )
+        fingerprints.append(result)
+    return {"web_fingerprints": fingerprints}
 
 
 def web_route_discovery(target: str, ports: list[int] | None = None, paths: list[str] | None = None) -> dict:
+    target = validate_target(target)
     selected_ports = ports or [80, 443, 8080, 8000, 5000, 8443]
-    context: dict[str, Any] = {"ports": selected_ports}
-    if paths:
-        context["paths"] = paths
-    result = run_generated_operation("web_route_discovery", target, context)
-    return {"web_routes": result.get("web_routes", [])}
+    selected_paths = paths or ["/", "/login", "/admin", "/api", "/robots.txt", "/functionRouter", "/index.action", "/showcase.action"]
+    routes = []
+    for port in selected_ports:
+        for path in selected_paths:
+            normalized = path if str(path).startswith("/") else f"/{path}"
+            result = request_summary(f"{url_for(target, port)}{normalized.lstrip('/')}", include_body=True)
+            body = str(result.pop("body", ""))
+            headers = result.pop("headers", {})
+            title = title_from_html(body)
+            result.update(
+                {
+                    "content_type": headers.get("content-type", ""),
+                    "content_length": headers.get("content-length", ""),
+                    "title": title,
+                    "links": links_from_html(body)[:20],
+                    "technology_signals": route_technology_signals(result.get("url", ""), title, body, result.get("status")),
+                    "artifact_signal": artifact_signal(result.get("url", ""), headers.get("content-type", ""), body.encode(errors="replace")),
+                }
+            )
+            routes.append(result)
+    return {"web_routes": routes}
+
+
+def url_for(target: str, port: int) -> str:
+    scheme = "https" if int(port) in {443, 8443} else "http"
+    return f"{scheme}://{target}:{int(port)}/"
+
+
+def request_summary(url: str, *, include_body: bool = False) -> dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        request = Request(url, headers={"User-Agent": "MedFlow-RedTeam/0.1"})
+        with urlopen(request, timeout=4) as response:
+            body = response.read(8192).decode("utf-8", errors="replace")
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            result: dict[str, Any] = {"url": url, "status": response.status, "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
+            if include_body:
+                result["body"] = body
+                result["headers"] = headers
+            return result
+    except HTTPError as exc:
+        body = exc.read(8192).decode("utf-8", errors="replace")
+        headers = {key.lower(): value for key, value in exc.headers.items()}
+        result = {"url": url, "status": exc.code, "http_error": True, "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
+        if include_body:
+            result["body"] = body
+            result["headers"] = headers
+        return result
+    except Exception as exc:
+        return {"url": url, "error": str(exc), "elapsed_ms": round((time.perf_counter() - started) * 1000, 2)}
+
+
+def technology_signals(text: str) -> list[str]:
+    lowered = text.lower()
+    checks = {
+        "activemq": "activemq",
+        "bootstrap": "bootstrap",
+        "couchdb": "couchdb",
+        "django": "django",
+        "express": "express",
+        "flask": "flask",
+        "functionrouter": "functionrouter",
+        "gunicorn": "gunicorn",
+        "jquery": "jquery",
+        "openwire": "openwire",
+        "php": "php",
+        "rocketmq": "rocketmq",
+        "shiro": "rememberme=deleteme",
+        "spring": "spring",
+        "thinkphp": "thinkphp",
+        "wordpress": "wp-content",
+    }
+    return sorted({name for name, marker in checks.items() if marker in lowered})
+
+
+def route_technology_signals(url: str, title: str, body: str, status: int | None) -> list[str]:
+    text = " ".join([title, body[:2000]]).lower()
+    signals = set(technology_signals(text))
+    lowered_url = url.lower()
+    if "struts" in text or re.search(r"\bs2-\d{3}\b", text) or (status in {200, 500} and ".action" in lowered_url):
+        signals.update({"struts", "ognl"})
+    if "whitelabel error page" in text or (status in {200, 500} and "functionrouter" in lowered_url):
+        signals.update({"spring", "spring cloud", "functionrouter"})
+    return sorted(signals)
+
+
+def title_from_html(body: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", body, flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r"\s+", " ", match.group(1)).strip() if match else ""
+
+
+def links_from_html(body: str) -> list[str]:
+    return sorted(set(re.findall(r"<a[^>]+href=[\"']([^\"']+)[\"']", body, flags=re.IGNORECASE)))
+
+
+def artifact_signal(url: str, content_type: str, body: bytes) -> str:
+    lowered_url = url.lower()
+    lowered_type = content_type.lower()
+    if "download" in lowered_url and ("octet-stream" in lowered_type or not lowered_type.startswith("text/html")):
+        return "downloadable artifact"
+    if any(term in lowered_url for term in ["backup", "config", "dump", "capture"]):
+        return "sensitive path keyword"
+    if any(body.startswith(magic) for magic in [b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x0a\x0d\x0d\x0a"]):
+        return "possible packet capture exposure"
+    return ""
 
 
 def web_control_checks(web_routes: dict[str, Any] | None, fingerprints: dict[str, Any] | None) -> dict[str, Any]:
@@ -307,14 +432,13 @@ def run_one_selected_capability(
             "reason": f"Generated tool is not allowed in execution mode {execution_mode}.",
         }
     else:
-        result = execute_generated_tool(
-            validate_target(target),
-            selected,
-            {
-                "execution_mode": execution_mode,
-                "matched_service": selected.get("matched_service") or {},
-            },
-        )
+        result = {
+            "allowed": True,
+            "exploited": False,
+            "verified": False,
+            "metadata_only": True,
+            "reason": "Generated Python tools are disabled in this build; use provider-backed capabilities such as Metasploit.",
+        }
     result["selected_exploit_id"] = exploit_id
     result["selected_exploit_name"] = selected.get("name")
     result["selection_score"] = selected.get("score")

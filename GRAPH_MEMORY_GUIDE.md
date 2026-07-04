@@ -177,15 +177,14 @@ MedFlow can normalize exported web scanner reports without launching a scanner:
 
 These adapters are intentionally import-focused so the campaign can consume authorized evidence without turning the agent into an uncontrolled web scanner.
 
-## Generated Tool Cache
+## On-Demand Tool Cache
 
-MedFlow can rank and execute cached generated Python tools through the `generated_python_tool` runner.
+MedFlow can rank generated Python tools through the `generated_python_tool` runner after a Toolsmith-style workflow creates them.
 
-Seeded generated tools are stored here:
+The committed config registry is intentionally empty:
 
 ```text
 config/generated_tools/tool_specs.json
-config/generated_tools/code/
 ```
 
 Runtime-generated tools are stored here:

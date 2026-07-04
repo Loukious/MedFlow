@@ -221,7 +221,7 @@ def capability_match_score(
 
     if capability.get("runner") == "generated_python_tool":
         score += 50
-        reasons.append("cached generated Python tool")
+        reasons.append("on-demand generated Python tool")
     elif capability.get("safe_to_execute"):
         score += 5
         reasons.append("provider marked safe to execute")

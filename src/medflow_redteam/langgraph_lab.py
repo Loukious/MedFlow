@@ -183,13 +183,13 @@ Actual graph steps completed:
 TCP connect check:
 {tcp}
 
-Generated service discovery:
+Runtime service discovery:
 {services}
 
 HTTP probe:
 {http}
 
-Generated safe script validation:
+Runtime safe script validation:
 {safe_scripts}
 
 Exploit tool selection:
@@ -239,7 +239,7 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
         return {
             "nmap_result": result,
             "services": services,
-            "steps": append_step(state, f"ran generated service discovery and parsed {len(services)} open services"),
+            "steps": append_step(state, f"ran runtime service discovery and parsed {len(services)} open services"),
             "tool_traces": [
                 *state.get("tool_traces", []),
                 make_trace("service_scan", " ".join(result.command or []), summarize_tool_result(result)),

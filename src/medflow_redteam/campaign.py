@@ -515,7 +515,7 @@ and success criteria. Do not provide exploit instructions.
                 fingerprint_status = "not_applicable"
                 route_status = "not_applicable"
             web_checks = web_control_checks(web_routes, fingerprints)
-            recon_step = "reconnaissance agent executed generated TCP, service, and HTTP probes against the allowlisted target" if http_ports else "reconnaissance agent executed generated TCP and service probes; skipped web probing because no HTTP-like services were observed"
+            recon_step = "reconnaissance agent executed runtime TCP, service, and HTTP probes against the allowlisted target" if http_ports else "reconnaissance agent executed runtime TCP and service probes; skipped web probing because no HTTP-like services were observed"
             steps = [*steps, recon_step]
             timeline = state.get("tool_timeline", [])
             timeline = [
@@ -570,7 +570,7 @@ and success criteria. Do not provide exploit instructions.
         fallback = fallback_agent_output(
             "Reconnaissance Agent",
             state["goal"],
-            ["generated TCP check", "generated service scan", "generated HTTP probes", "asset inventory placeholder"],
+            ["runtime TCP check", "runtime service scan", "runtime HTTP probes", "asset inventory placeholder"],
             [
                 "Use only allowlisted targets for active probing.",
                 "Classify exposed services and likely attack surfaces.",

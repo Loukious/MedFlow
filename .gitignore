@@ -8,6 +8,9 @@ data/capabilities/
 data/capability_sources/
 data/graph/
 data/generated_tools/
+data/vulhub_success_suite.json
+scripts/local/
+scripts/create_vulhub_success_suite.py
 reports/
 vulhub/
 *.pyc

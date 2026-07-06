@@ -119,6 +119,15 @@ curl -s -X POST http://127.0.0.1:8000/toolsmith/tools \
   }'
 ```
 
+### Debug Review
+
+```http
+GET /jobs/{job_id}/debug
+GET /debug/campaign-report?path=reports/redteam_campaign/redteam_campaign_YYYYMMDD-HHMMSS.json
+```
+
+These endpoints return the full debug structure used for manual review: summary counters, tool timeline, tool traces, validation results, raw recon output, selected capability scores, graph hits, sources, phases, and agent handoffs.
+
 ## Running
 
 ```bash
@@ -130,4 +139,3 @@ OpenAPI documentation:
 ```text
 http://127.0.0.1:8000/docs
 ```
-

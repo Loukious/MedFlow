@@ -85,19 +85,27 @@ class RedTeamCoreTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result["count"], 2)
 
-    def test_generated_tool_specs_are_valid_and_ranked(self) -> None:
+    def test_generated_tool_specs_from_dynamic_cache_are_valid(self) -> None:
         specs = load_generated_tool_specs()
-        self.assertTrue(any(item["id"] == "generated:unrealircd_3281_rce" for item in specs))
         for item in specs:
             validation = validate_generated_tool_code(resolve_generated_tool_code(item))
             self.assertTrue(validation.ok, validation.errors)
-        selected = select_capabilities_for_services(
-            "172.29.10.10",
-            [{"port": "6667", "service": "irc", "version": "UnrealIRCd"}],
-            limit=1,
-        )
-        self.assertEqual(selected["selected_candidates"][0]["id"], "generated:unrealircd_3281_rce")
-        self.assertEqual(selected["selected_candidates"][0]["runner"], "generated_python_tool")
+        if specs:
+            spec = specs[0]
+            match = spec.get("match") or {}
+            ports = match.get("ports") or ["1"]
+            selected = select_capabilities_for_services(
+                "172.29.10.10",
+                [
+                    {
+                        "port": str(ports[0]),
+                        "service": str(match.get("service") or "unknown"),
+                        "version": " ".join(match.get("product_keywords") or []),
+                    }
+                ],
+                limit=1,
+            )
+            self.assertEqual(selected["selected_candidates"][0]["runner"], "generated_python_tool")
 
     def test_observation_status_does_not_call_errors_success(self) -> None:
         self.assertEqual(

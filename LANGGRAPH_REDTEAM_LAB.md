@@ -452,6 +452,41 @@ python scripts/create_generated_tool.py --id custom_banner --provider llama --pr
 
 Generated tools must expose `run(context: dict) -> dict`, use only approved imports, and execute through the `generated_python_tool` runner.
 
+## Debug Review
+
+Campaign JSON reports already contain the raw campaign state. To make manual review easier, export a full debug bundle:
+
+```bash
+.venv/bin/python scripts/export_campaign_debug.py
+```
+
+By default this reads the latest `reports/redteam_campaign/redteam_campaign_*.json` and writes:
+
+```text
+reports/debug/<campaign-report-name>/
+  summary.md
+  debug.json
+  tool_timeline.json
+  tool_traces.json
+  raw/
+  validation_results/
+```
+
+Use a specific report when needed:
+
+```bash
+.venv/bin/python scripts/export_campaign_debug.py reports/redteam_campaign/redteam_campaign_YYYYMMDD-HHMMSS.json
+```
+
+The REST API also exposes debug views:
+
+```text
+GET /jobs/{job_id}/debug
+GET /debug/campaign-report?path=reports/redteam_campaign/redteam_campaign_YYYYMMDD-HHMMSS.json
+```
+
+These debug views are meant for manual accuracy review. They preserve the tool timeline, validation result objects, selected capability scores, proof output, raw recon output, graph memory hits, and role handoffs.
+
 For direct tool validation without the multi-agent campaign layer, use the lab runner:
 
 ```bash

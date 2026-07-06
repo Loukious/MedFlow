@@ -8,6 +8,8 @@ from fastapi import FastAPI, HTTPException
 
 from medflow_graph.memory import GraphStore, ingest_campaign_report
 from medflow_redteam.campaign import run_campaign, save_campaign_run
+from medflow_redteam.config_loader import ROOT
+from medflow_redteam.debug import build_campaign_debug, load_campaign_payload
 from medflow_redteam.toolsmith import ToolsmithAgent
 
 from .jobs import JobManager, job_to_dict
@@ -54,6 +56,29 @@ def get_job(job_id: str) -> ApiResponse:
     if record is None:
         raise HTTPException(status_code=404, detail="Job not found.")
     return ApiResponse(data=job_to_dict(record))
+
+
+@app.get("/jobs/{job_id}/debug", response_model=ApiResponse)
+def get_job_debug(job_id: str) -> ApiResponse:
+    record = jobs.get(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if record.result is None:
+        raise HTTPException(status_code=409, detail=f"Job is {record.status}; debug is available after completion.")
+    return ApiResponse(data=build_campaign_debug(record.result))
+
+
+@app.get("/debug/campaign-report", response_model=ApiResponse)
+def campaign_report_debug(path: str) -> ApiResponse:
+    report = Path(path)
+    if not report.is_absolute():
+        report = ROOT / report
+    report = report.resolve()
+    if not str(report).startswith(str(ROOT.resolve())):
+        raise HTTPException(status_code=400, detail="Report path must stay inside the project workspace.")
+    if not report.exists():
+        raise HTTPException(status_code=404, detail="Campaign report not found.")
+    return ApiResponse(data=build_campaign_debug(load_campaign_payload(report)))
 
 
 @app.post("/graph/search", response_model=ApiResponse)

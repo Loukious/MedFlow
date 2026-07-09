@@ -22,6 +22,7 @@ dependencies = [
   "pypdf",
   "fastapi",
   "uvicorn[standard]",
+  "pymetasploit3",
 ]
 
 [project.scripts]

@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 import time
 from typing import Any
 
+from .command_planner import (
+    metasploit_backend,
+    plan_metasploit_resource,
+    rpc_settings,
+    start_msfrpcd_if_requested,
+)
 from .metasploit_planner import plan_metasploit_execution
 
 
@@ -29,6 +36,8 @@ def run_metasploit_module(
     execution_mode: str,
     action: str = "check",
     timeout: int = 180,
+    provider: str = "llama",
+    use_llm: bool = False,
 ) -> dict[str, Any]:
     plan = plan_metasploit_execution(
         capability,
@@ -74,6 +83,9 @@ def run_metasploit_module(
                 selected_payload,
                 action,
                 timeout=timeout,
+                target=target,
+                provider=provider,
+                use_llm=use_llm,
             )
             combined = stdout + "\n" + stderr
             verdict = parse_check_verdict(combined)
@@ -164,26 +176,76 @@ def run_msfconsole_action(
     action: str,
     *,
     timeout: int,
+    target: str,
+    provider: str = "llama",
+    use_llm: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str, str, float, list[str]]:
-    resource_lines = [f"use {module_path}"]
-    for key, value in options.items():
-        if key in {"LHOST", "LPORT"} and selected_payload == "":
-            continue
-        if value not in {"", None, "auto"}:
-            resource_lines.append(f"set {key} {value}")
-    if selected_payload:
-        resource_lines.append(f"set PAYLOAD {selected_payload}")
-    if action == "exploit" and selected_payload == "cmd/unix/generic":
-        resource_lines.append("set CMD id")
-    if action == "exploit":
-        resource_lines.extend(["run -j", "sleep 12", "sessions -l", "sessions -K", "exit -y"])
-    else:
-        resource_lines.extend(["check", "exit -y"])
+    resource_plan = plan_metasploit_resource(
+        target,
+        module_path,
+        options,
+        selected_payload,
+        action,
+        provider=provider,
+        use_llm=use_llm,
+    )
+    resource_lines = resource_plan["resource_lines"]
+    backend = metasploit_backend()
+    if backend in {"rpc", "auto"}:
+        rpc_result = run_metasploit_rpc_action(resource_lines, timeout=timeout)
+        if rpc_result is not None:
+            proc, stdout, stderr, elapsed = rpc_result
+            command = ["msfrpc", *resource_lines]
+            stdout = f"[medflow_command_plan] {json.dumps(resource_plan, default=str)}\n{stdout}"
+            return proc, strip_ansi(stdout), strip_ansi(stderr), elapsed, command
+        if backend == "rpc":
+            proc = subprocess.CompletedProcess(["msfrpc"], 1, "", "Metasploit RPC backend unavailable.")
+            return proc, "", "Metasploit RPC backend unavailable.", 0.0, ["msfrpc", *resource_lines]
     command = [msfconsole, "-q", "-x", "; ".join(resource_lines)]
     started = time.monotonic()
     proc = subprocess.run(command, text=True, capture_output=True, timeout=timeout, check=False)
     elapsed = time.monotonic() - started
-    return proc, strip_ansi(proc.stdout), strip_ansi(proc.stderr), elapsed, command
+    stdout = f"[medflow_command_plan] {json.dumps(resource_plan, default=str)}\n{proc.stdout}"
+    return proc, strip_ansi(stdout), strip_ansi(proc.stderr), elapsed, command
+
+
+def run_metasploit_rpc_action(
+    resource_lines: list[str],
+    *,
+    timeout: int,
+) -> tuple[subprocess.CompletedProcess[str], str, str, float] | None:
+    try:
+        from pymetasploit3.msfrpc import MsfRpcClient
+    except Exception:
+        return None
+    start_msfrpcd_if_requested()
+    settings = rpc_settings()
+    started = time.monotonic()
+    try:
+        client = MsfRpcClient(
+            settings["password"],
+            server=settings["server"],
+            port=settings["port"],
+            ssl=settings["ssl"],
+        )
+        console = client.consoles.console()
+        console.write("\n".join(resource_lines) + "\n")
+        output = ""
+        while time.monotonic() - started < timeout:
+            chunk = console.read()
+            output += str(chunk.get("data") or "")
+            if not chunk.get("busy") and re.search(r"exit|completed|sessions|Job \d+", output, re.I):
+                break
+            time.sleep(1)
+        try:
+            console.destroy()
+        except Exception:
+            pass
+        elapsed = time.monotonic() - started
+        proc = subprocess.CompletedProcess(["msfrpc", *resource_lines], 0, output, "")
+        return proc, output, "", elapsed
+    except Exception as exc:
+        return None
 
 
 def payload_attempts(plan: dict[str, Any]) -> list[str]:

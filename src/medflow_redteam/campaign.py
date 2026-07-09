@@ -494,7 +494,8 @@ and success criteria. Do not provide exploit instructions.
             ports = state.get("ports") or default_ports_for_target(target)
             tcp = tcp_connect_check(target, ports=ports)
             open_ports = open_ports_from_tcp(tcp)
-            nmap_result = service_scan(target, ports=open_ports or ports)
+            scan_profile = f"llm:{state.get('provider', 'llama')}" if state.get("use_llm") else None
+            nmap_result = service_scan(target, ports=open_ports or ports, profile=scan_profile)
             services = parse_open_services(nmap_result.stdout)
             if not services and open_ports:
                 services = infer_services_from_ports(open_ports)
@@ -641,6 +642,8 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             selection,
             execution_mode=state.get("execution_mode", "safe"),
             metasploit_action=state.get("metasploit_action", "check"),
+            provider=state.get("provider", "llama"),
+            use_llm=state.get("use_llm", False),
         )
         output = agent_to_dict(
             AgentOutput(
@@ -1105,6 +1108,8 @@ def run_validation_loop(
             selection,
             execution_mode=state.get("execution_mode", "safe"),
             metasploit_action=state.get("metasploit_action", "check"),
+            provider=state.get("provider", "llama"),
+            use_llm=state.get("use_llm", False),
         )
         for item in validation.get("results", []):
             if item.get("selected_exploit_id"):

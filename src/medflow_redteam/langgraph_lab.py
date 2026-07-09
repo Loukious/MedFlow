@@ -300,6 +300,8 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
             state.get("exploit_selection", {}),
             use_sudo=state.get("use_sudo", False),
             execution_mode=state.get("execution_mode", "safe"),
+            provider=state.get("provider", "llama"),
+            use_llm=True,
         )
         return {
             "exploit_validation": result,

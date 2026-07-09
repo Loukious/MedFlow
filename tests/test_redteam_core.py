@@ -8,6 +8,12 @@ from pathlib import Path
 from medflow_graph.memory import GraphStore
 from medflow_redteam.campaign import http_ports_from_services, observation_status
 from medflow_redteam.capabilities import capability_match_score, select_capabilities_for_services
+from medflow_redteam.command_planner import (
+    fallback_metasploit_resource,
+    fallback_nmap_plan,
+    validate_metasploit_resource,
+    validate_nmap_argv,
+)
 from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_generated_tool_code, validate_generated_tool_code
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.tools import normalize_validation_status, web_control_checks
@@ -128,6 +134,36 @@ class RedTeamCoreTests(unittest.TestCase):
             [],
         )
         self.assertEqual(http_ports_from_services([{"port": "8180", "service": "http", "version": "Jetty"}]), [8180])
+
+    def test_dynamic_command_plans_are_constrained(self) -> None:
+        nmap_plan = fallback_nmap_plan("172.29.10.10", [21, 22])
+        self.assertEqual(validate_nmap_argv(nmap_plan["argv"], "172.29.10.10", [21, 22]), nmap_plan["argv"])
+        with self.assertRaises(ValueError):
+            validate_nmap_argv(["nmap", "--script", "vuln", "-p", "21,22", "172.29.10.10"], "172.29.10.10", [21, 22])
+
+        msf_plan = fallback_metasploit_resource(
+            "172.29.10.10",
+            "exploit/unix/irc/unreal_ircd_3281_backdoor",
+            {"RPORT": "6667"},
+            "cmd/unix/generic",
+            "exploit",
+        )
+        self.assertEqual(
+            validate_metasploit_resource(
+                msf_plan["resource_lines"],
+                "172.29.10.10",
+                "exploit/unix/irc/unreal_ircd_3281_backdoor",
+                "exploit",
+            ),
+            msf_plan["resource_lines"],
+        )
+        with self.assertRaises(ValueError):
+            validate_metasploit_resource(
+                ["use exploit/unix/irc/unreal_ircd_3281_backdoor", "set RHOSTS 8.8.8.8", "check", "exit -y"],
+                "172.29.10.10",
+                "exploit/unix/irc/unreal_ircd_3281_backdoor",
+                "check",
+            )
 
 
 if __name__ == "__main__":

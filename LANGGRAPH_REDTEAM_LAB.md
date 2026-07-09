@@ -452,6 +452,45 @@ python scripts/create_generated_tool.py --id custom_banner --provider llama --pr
 
 Generated tools must expose `run(context: dict) -> dict`, use only approved imports, and execute through the `generated_python_tool` runner.
 
+## Dynamic Command Planning
+
+MedFlow keeps local lookup/ranking for capabilities, but command construction can now be delegated to the selected LLM provider during LLM-enabled runs.
+
+- Nmap service discovery uses an LLM-generated argv plan when the campaign is run with LLM enabled.
+- Metasploit keeps local module lookup/ranking, then asks the LLM for a Metasploit resource plan.
+- Every generated command/resource plan is validated before execution.
+- If the LLM is disabled or returns an unsafe/invalid plan, MedFlow falls back to a deterministic safe plan.
+
+Metasploit execution backend:
+
+```bash
+# default: try RPC if available, then fall back to msfconsole
+export MEDFLOW_METASPLOIT_BACKEND=auto
+
+# require RPC only
+export MEDFLOW_METASPLOIT_BACKEND=rpc
+
+# force msfconsole
+export MEDFLOW_METASPLOIT_BACKEND=shell
+```
+
+RPC settings:
+
+```bash
+export MSFRPC_PASSWORD=medflow
+export MSFRPC_HOST=127.0.0.1
+export MSFRPC_PORT=55552
+export MSFRPC_SSL=true
+```
+
+To let MedFlow start `msfrpcd` when RPC is selected:
+
+```bash
+export MEDFLOW_START_MSFRPCD=1
+```
+
+The command planner does not allow arbitrary shell. Nmap plans must use the exact target and exact port list. Metasploit plans must use the selected module, set the exact target, and use only validated resource commands such as `use`, `set`, `check`, `run -j`, `sessions -l`, `sessions -K`, and `exit -y`.
+
 ## Debug Review
 
 Campaign JSON reports already contain the raw campaign state. To make manual review easier, export a full debug bundle:

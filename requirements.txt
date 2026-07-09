@@ -12,3 +12,4 @@ streamlit
 pypdf
 fastapi
 uvicorn[standard]
+pymetasploit3

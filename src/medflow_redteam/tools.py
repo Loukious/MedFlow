@@ -14,6 +14,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from .capabilities import select_capabilities_for_services
+from .command_planner import execute_command, plan_nmap_command
 from .config_loader import load_lab_config
 from .generated_tools import DATA_TOOL_DIR, execute_generated_tool
 from .metasploit_runner import run_metasploit_module
@@ -80,10 +81,15 @@ def tcp_connect_check(target: str, ports: list[int] | None = None, timeout: floa
 def service_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
     target = validate_target(target)
     selected_ports = ports or default_ports_for_target(target)
-    command = ["nmap", "-sV", "-Pn", "--version-light", "--reason", "-p", ",".join(str(port) for port in selected_ports), target]
-    started = time.perf_counter()
-    proc = subprocess.run(command, text=True, capture_output=True, timeout=120, check=False)
-    return ToolResult("nmap", command, proc.returncode, proc.stdout, proc.stderr, time.perf_counter() - started)
+    use_llm = (profile or "").startswith("llm:")
+    provider = (profile or "llm:llama").split(":", 1)[1] if use_llm else "llama"
+    plan = plan_nmap_command(target, selected_ports, provider=provider, use_llm=use_llm)
+    command = plan["argv"]
+    proc, elapsed = execute_command(command, timeout=120)
+    stdout = proc.stdout
+    if plan.get("generated_by"):
+        stdout = f"[medflow_command_plan] {json.dumps({k: v for k, v in plan.items() if k != 'llm_raw'}, default=str)}\n{stdout}"
+    return ToolResult("nmap", command, proc.returncode, stdout, proc.stderr, elapsed)
 
 
 def safe_script_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
@@ -360,6 +366,8 @@ def run_selected_exploit(
     use_sudo: bool = False,
     execution_mode: str = "safe",
     metasploit_action: str = "check",
+    provider: str = "llama",
+    use_llm: bool = False,
 ) -> dict:
     selected_candidates = selection.get("selected_candidates") or ([selection.get("selected")] if selection and selection.get("selected") else [])
     if not selected_candidates:
@@ -379,6 +387,8 @@ def run_selected_exploit(
                 use_sudo=use_sudo,
                 execution_mode=execution_mode,
                 metasploit_action=metasploit_action,
+                provider=provider,
+                use_llm=use_llm,
             )
         )
     verified_results = [item for item in results if item.get("verified")]
@@ -407,6 +417,8 @@ def run_one_selected_capability(
     use_sudo: bool = False,
     execution_mode: str = "safe",
     metasploit_action: str = "check",
+    provider: str = "llama",
+    use_llm: bool = False,
 ) -> dict:
     exploit_id = selected.get("id")
     runner = selected.get("runner")
@@ -416,6 +428,8 @@ def run_one_selected_capability(
             selected,
             execution_mode=execution_mode,
             action=metasploit_action,
+            provider=provider,
+            use_llm=use_llm,
         )
     elif runner != "generated_python_tool":
         result = {

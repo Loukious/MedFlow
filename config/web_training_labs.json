@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "network": "medflow_web_training_internal",
+  "labs": {
+    "juice_shop": {
+      "kind": "container",
+      "image": "bkimminich/juice-shop:latest",
+      "container": "medflow-training-juice-shop",
+      "internal_port": 3000,
+      "base_path": "/",
+      "coverage": ["xss", "sqli", "idor", "api", "business_logic"],
+      "source_url": "https://github.com/juice-shop/juice-shop"
+    },
+    "webgoat": {
+      "kind": "container",
+      "image": "webgoat/webgoat:latest",
+      "container": "medflow-training-webgoat",
+      "internal_port": 8080,
+      "base_path": "/WebGoat/",
+      "coverage": ["xss", "sqli", "idor", "access_control", "ssti"],
+      "source_url": "https://github.com/WebGoat/WebGoat"
+    },
+    "vampi": {
+      "kind": "container",
+      "image": "erev0s/vampi:latest",
+      "container": "medflow-training-vampi",
+      "internal_port": 5000,
+      "base_path": "/",
+      "coverage": ["api", "idor", "broken_object_authorization", "mass_assignment"],
+      "source_url": "https://github.com/erev0s/VAmPI"
+    },
+    "crapi": {
+      "kind": "external_compose",
+      "repository": "https://github.com/OWASP/crAPI.git",
+      "local_path": "data/labs/crAPI",
+      "compose_path": "deploy/docker/docker-compose.yml",
+      "coverage": ["api", "idor", "broken_object_authorization", "business_logic"],
+      "source_url": "https://github.com/OWASP/crAPI"
+    }
+  }
+}

@@ -10,6 +10,15 @@ ExecutionMode = Literal["safe", "aggressive_lab"]
 MetasploitAction = Literal["plan", "check", "exploit"]
 
 
+class WebAuthContextRequest(BaseModel):
+    """Pre-authenticated lab context. Values are redacted from persisted results."""
+
+    name: str = Field(..., min_length=1)
+    headers: dict[str, str] = Field(default_factory=dict)
+    cookies: dict[str, str] = Field(default_factory=dict)
+    owned_object_ids: list[str] = Field(default_factory=list)
+
+
 class CampaignRequest(BaseModel):
     goal: str = Field(..., min_length=1)
     target: str | None = None
@@ -31,6 +40,7 @@ class CampaignRequest(BaseModel):
     max_failed_rounds: int = Field(default=2, ge=1, le=20)
     stop_on_success: bool = True
     output_dir: str = "reports/redteam_campaign"
+    web_auth_contexts: list[WebAuthContextRequest] = Field(default_factory=list, max_length=4)
 
 
 class GraphSearchRequest(BaseModel):

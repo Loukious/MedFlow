@@ -36,7 +36,7 @@ from .tools import (
     web_fingerprint,
     web_route_discovery,
 )
-from .web_app import run_web_assessment
+from .web_app import WebAuthContext, run_web_assessment
 
 
 @dataclass
@@ -91,6 +91,7 @@ class CampaignState(TypedDict, total=False):
     execution_mode: str
     metasploit_action: str
     use_llm: bool
+    web_auth_contexts: list[WebAuthContext]
     ports: list[int]
     tcp: dict[str, Any]
     nmap_result: ToolResult
@@ -535,7 +536,13 @@ and success criteria. Do not provide exploit instructions.
                 http = http_probe(target, ports=http_ports)
                 fingerprints = web_fingerprint(target, ports=http_ports)
                 web_routes = web_route_discovery(target, ports=http_ports)
-                web_assessment = run_web_assessment(target, http_ports, max_depth=1, max_routes=24)
+                web_assessment = run_web_assessment(
+                    target,
+                    http_ports,
+                    max_depth=1,
+                    max_routes=24,
+                    auth_contexts=state.get("web_auth_contexts", []),
+                )
                 http_status = observation_status(http, "http_probe")
                 fingerprint_status = observation_status(fingerprints, "web_fingerprints")
                 route_status = observation_status(web_routes, "web_routes")
@@ -1020,6 +1027,7 @@ def run_campaign(
     max_tools: int = 12,
     max_failed_rounds: int = 2,
     stop_on_success: bool = True,
+    web_auth_contexts: list[WebAuthContext] | None = None,
 ) -> CampaignRun:
     started = time.perf_counter()
     settings = load_settings()
@@ -1035,6 +1043,7 @@ def run_campaign(
         "execution_mode": execution_mode,
         "metasploit_action": metasploit_action,
         "use_llm": use_llm,
+        "web_auth_contexts": web_auth_contexts or [],
         "ports": ports or (default_ports_for_target(target) if target else []),
         "steps": [],
         "phases": [],

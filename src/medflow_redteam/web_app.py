@@ -5,6 +5,7 @@ import json
 import re
 import time
 from dataclasses import asdict, dataclass, field
+from difflib import SequenceMatcher
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,14 @@ class WebParam:
     location: str
     value: str = ""
     classifications: list[str] = field(default_factory=list)
+
+
+@dataclass
+class WebAuthContext:
+    name: str
+    headers: dict[str, str] = field(default_factory=dict)
+    cookies: dict[str, str] = field(default_factory=dict)
+    owned_object_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -68,6 +77,7 @@ class WebAssessment:
     routes: list[WebRoute]
     findings: list[WebFinding]
     kb_context: list[dict[str, Any]]
+    auth_contexts: list[dict[str, Any]]
     graph_summary: dict[str, int]
     elapsed_seconds: float
 
@@ -129,11 +139,17 @@ def run_web_assessment(
     max_routes: int = 30,
     graph_path: Path = GRAPH_PATH,
     use_kb: bool = True,
+    auth_contexts: list[WebAuthContext] | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     target = validate_target(target)
-    routes = crawl_web(target, ports, paths=paths, max_depth=max_depth, max_routes=max_routes)
-    findings = run_safe_web_probes(routes)
+    auth_contexts = auth_contexts or []
+    primary_context = auth_contexts[0] if auth_contexts else None
+    routes = crawl_web(target, ports, paths=paths, max_depth=max_depth, max_routes=max_routes, auth_context=primary_context)
+    findings = run_safe_web_probes(routes, auth_context=primary_context)
+    if len(auth_contexts) >= 2:
+        findings.extend(run_idor_confirmation(routes, auth_contexts[0], auth_contexts[1]))
+        findings = dedupe_findings(findings)
     kb_context = retrieve_web_context(routes, findings) if use_kb else []
     graph = persist_web_observation_graph(target, ports, routes, findings, graph_path)
     assessment = WebAssessment(
@@ -142,6 +158,7 @@ def run_web_assessment(
         routes=routes,
         findings=findings,
         kb_context=kb_context,
+        auth_contexts=[redact_auth_context(context) for context in auth_contexts],
         graph_summary=graph.summary(),
         elapsed_seconds=round(time.monotonic() - started, 3),
     )
@@ -155,6 +172,7 @@ def crawl_web(
     paths: list[str] | None = None,
     max_depth: int = 1,
     max_routes: int = 30,
+    auth_context: WebAuthContext | None = None,
 ) -> list[WebRoute]:
     queue: list[tuple[str, int]] = []
     for port in ports:
@@ -169,7 +187,7 @@ def crawl_web(
         if normalized in seen:
             continue
         seen.add(normalized)
-        route = fetch_route(url)
+        route = fetch_route(url, auth_context=auth_context)
         route.params.extend(query_params_from_url(route.url))
         for form in route.forms:
             for item in form.get("inputs", []):
@@ -195,10 +213,10 @@ def crawl_web(
     return routes
 
 
-def fetch_route(url: str) -> WebRoute:
+def fetch_route(url: str, auth_context: WebAuthContext | None = None) -> WebRoute:
     started = time.monotonic()
     try:
-        request = Request(url, headers={"User-Agent": "MedFlow-WebAgent/0.1"})
+        request = build_request(url, auth_context=auth_context)
         with urlopen(request, timeout=5) as response:
             body_bytes = response.read(32768)
             body = body_bytes.decode("utf-8", errors="replace")
@@ -220,16 +238,16 @@ def fetch_route(url: str) -> WebRoute:
         return WebRoute(url=url, error=str(exc), body_hash=sha1_short(f"{type(exc).__name__}:{exc}:{started}"))
 
 
-def run_safe_web_probes(routes: list[WebRoute]) -> list[WebFinding]:
+def run_safe_web_probes(routes: list[WebRoute], auth_context: WebAuthContext | None = None) -> list[WebFinding]:
     findings: list[WebFinding] = []
     for route in routes:
         for param in route.params:
             if "sql_like" in param.classifications:
-                finding = probe_sqli(route, param)
+                finding = probe_sqli(route, param, auth_context=auth_context)
                 if finding:
                     findings.append(finding)
             if "reflected_input" in param.classifications or "search" in param.classifications:
-                finding = probe_xss_reflection(route, param)
+                finding = probe_xss_reflection(route, param, auth_context=auth_context)
                 if finding:
                     findings.append(finding)
             if "object_id" in param.classifications:
@@ -250,13 +268,13 @@ def run_safe_web_probes(routes: list[WebRoute]) -> list[WebFinding]:
     return dedupe_findings(findings)
 
 
-def probe_sqli(route: WebRoute, param: WebParam) -> WebFinding | None:
-    baseline = fetch_text(route.url)
+def probe_sqli(route: WebRoute, param: WebParam, auth_context: WebAuthContext | None = None) -> WebFinding | None:
+    baseline = fetch_text(route.url, auth_context=auth_context)
     if not baseline.get("ok"):
         return None
     for probe in SAFE_SQLI_PROBES:
         url = mutate_query_param(route.url, param.name, probe)
-        result = fetch_text(url)
+        result = fetch_text(url, auth_context=auth_context)
         if not result.get("ok"):
             continue
         body = str(result.get("body", ""))
@@ -277,8 +295,8 @@ def probe_sqli(route: WebRoute, param: WebParam) -> WebFinding | None:
     return None
 
 
-def probe_xss_reflection(route: WebRoute, param: WebParam) -> WebFinding | None:
-    result = fetch_text(mutate_query_param(route.url, param.name, XSS_MARKER))
+def probe_xss_reflection(route: WebRoute, param: WebParam, auth_context: WebAuthContext | None = None) -> WebFinding | None:
+    result = fetch_text(mutate_query_param(route.url, param.name, XSS_MARKER), auth_context=auth_context)
     if not result.get("ok"):
         return None
     body = str(result.get("body", ""))
@@ -298,14 +316,106 @@ def probe_xss_reflection(route: WebRoute, param: WebParam) -> WebFinding | None:
     )
 
 
-def fetch_text(url: str) -> dict[str, Any]:
+def fetch_text(url: str, auth_context: WebAuthContext | None = None) -> dict[str, Any]:
     try:
-        request = Request(url, headers={"User-Agent": "MedFlow-WebAgent/0.1"})
+        request = build_request(url, auth_context=auth_context)
         with urlopen(request, timeout=5) as response:
             body = response.read(32768).decode("utf-8", errors="replace")
             return {"ok": True, "status": response.status, "body": body, "content_type": response.headers.get("content-type", "")}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
+
+
+def run_idor_confirmation(
+    routes: list[WebRoute],
+    owner_context: WebAuthContext,
+    alternate_context: WebAuthContext,
+) -> list[WebFinding]:
+    """Confirm only declared owner objects accessible through a second lab context.
+
+    Object IDs come from observed routes and must be declared in ``owned_object_ids``.
+    This deliberately avoids enumeration, guessing, credential handling, and writes.
+    """
+    owned = {str(value) for value in owner_context.owned_object_ids if str(value)}
+    if not owned:
+        return []
+    findings: list[WebFinding] = []
+    for route in routes:
+        for param in route.params:
+            if "object_id" not in param.classifications or str(param.value) not in owned:
+                continue
+            owner_response = fetch_text(route.url, auth_context=owner_context)
+            alternate_response = fetch_text(route.url, auth_context=alternate_context)
+            if not owner_response.get("ok") or not alternate_response.get("ok"):
+                continue
+            owner_body = str(owner_response.get("body", ""))
+            alternate_body = str(alternate_response.get("body", ""))
+            similarity = response_similarity(owner_body, alternate_body)
+            if (
+                int(owner_response.get("status") or 0) < 200
+                or int(owner_response.get("status") or 0) >= 300
+                or int(alternate_response.get("status") or 0) < 200
+                or int(alternate_response.get("status") or 0) >= 300
+                or similarity < 0.92
+                or looks_like_auth_denial(alternate_body)
+            ):
+                continue
+            findings.append(
+                WebFinding(
+                    type="idor_confirmed",
+                    severity="high",
+                    confidence="high",
+                    url=route.url,
+                    parameter=param.name,
+                    evidence=(
+                        f"Object {param.value} declared owned by {owner_context.name} was returned to "
+                        f"{alternate_context.name} with response similarity {similarity:.2f}."
+                    ),
+                    proof="Two authorized lab contexts received successful materially similar responses for the same owner-declared object.",
+                    cwe="CWE-639",
+                    owasp="A01:2021-Broken Access Control",
+                    status="confirmed_vulnerability",
+                )
+            )
+    return findings
+
+
+def build_request(url: str, auth_context: WebAuthContext | None = None) -> Request:
+    headers = {"User-Agent": "MedFlow-WebAgent/0.1"}
+    if auth_context:
+        headers.update({str(key): str(value) for key, value in auth_context.headers.items()})
+        if auth_context.cookies:
+            headers["Cookie"] = "; ".join(f"{key}={value}" for key, value in auth_context.cookies.items())
+    return Request(url, headers=headers)
+
+
+def redact_auth_context(context: WebAuthContext) -> dict[str, Any]:
+    return {
+        "name": context.name,
+        "header_names": sorted(context.headers),
+        "cookie_names": sorted(context.cookies),
+        "owned_object_ids": list(context.owned_object_ids),
+    }
+
+
+def response_similarity(left: str, right: str) -> float:
+    left_normalized = normalize_response_body(left)
+    right_normalized = normalize_response_body(right)
+    if not left_normalized or not right_normalized:
+        return 0.0
+    return SequenceMatcher(None, left_normalized, right_normalized).ratio()
+
+
+def normalize_response_body(body: str) -> str:
+    compact = re.sub(r"\s+", " ", body.lower())
+    compact = re.sub(r"\b[0-9a-f]{8}-[0-9a-f-]{27,}\b", "<uuid>", compact)
+    compact = re.sub(r"\b\d{10,}\b", "<number>", compact)
+    return compact[:12000]
+
+
+def looks_like_auth_denial(body: str) -> bool:
+    lowered = body.lower()
+    return any(marker in lowered for marker in ["unauthorized", "forbidden", "access denied", "login required", "sign in to continue"])
 
 
 def retrieve_web_context(routes: list[WebRoute], findings: list[WebFinding]) -> list[dict[str, Any]]:

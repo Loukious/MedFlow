@@ -11,6 +11,7 @@ from medflow_redteam.campaign import run_campaign, save_campaign_run
 from medflow_redteam.config_loader import ROOT
 from medflow_redteam.debug import build_campaign_debug, load_campaign_payload
 from medflow_redteam.toolsmith import ToolsmithAgent
+from medflow_redteam.web_app import WebAuthContext
 
 from .jobs import JobManager, job_to_dict
 from .schemas import (
@@ -145,6 +146,15 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
         max_tools=request.max_tools,
         max_failed_rounds=request.max_failed_rounds,
         stop_on_success=request.stop_on_success,
+        web_auth_contexts=[
+            WebAuthContext(
+                name=context.name,
+                headers=context.headers,
+                cookies=context.cookies,
+                owned_object_ids=context.owned_object_ids,
+            )
+            for context in request.web_auth_contexts
+        ],
     )
     saved = save_campaign_run(run, Path(request.output_dir))
     payload = asdict(run)

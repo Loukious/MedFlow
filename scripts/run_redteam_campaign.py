@@ -11,6 +11,7 @@ from rich.table import Table
 
 from medflow_graph.memory import GraphStore, ingest_campaign_report
 from medflow_redteam.campaign import CampaignRun, run_campaign, save_campaign_run
+from medflow_redteam.web_app import WebAuthContext
 
 
 def parse_ports(value: str | None) -> list[int] | None:
@@ -34,6 +35,28 @@ def parse_ports(value: str | None) -> list[int] | None:
     if invalid:
         raise ValueError(f"Invalid TCP port(s): {invalid[:5]}")
     return sorted(ports)
+
+
+def load_auth_contexts(path: str | None) -> list[WebAuthContext]:
+    if not path:
+        return []
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    items = payload.get("contexts", payload) if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        raise ValueError("Auth context JSON must be a list or an object with a contexts list.")
+    contexts: list[WebAuthContext] = []
+    for item in items:
+        if not isinstance(item, dict) or not item.get("name"):
+            raise ValueError("Each auth context requires a name.")
+        contexts.append(
+            WebAuthContext(
+                name=str(item["name"]),
+                headers={str(key): str(value) for key, value in (item.get("headers") or {}).items()},
+                cookies={str(key): str(value) for key, value in (item.get("cookies") or {}).items()},
+                owned_object_ids=[str(value) for value in (item.get("owned_object_ids") or [])],
+            )
+        )
+    return contexts
 
 
 def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_traces: bool) -> None:
@@ -164,6 +187,7 @@ def main() -> None:
     parser.add_argument("goal", help="High-level campaign goal, for example: validate hospital portal identity attack paths.")
     parser.add_argument("--target", default=None, help="Optional allowlisted target for active reconnaissance.")
     parser.add_argument("--ports", default=None, help="Comma-separated ports for active reconnaissance.")
+    parser.add_argument("--auth-contexts", default=None, help="JSON file containing pre-authenticated lab contexts for authorized IDOR comparison.")
     parser.add_argument("--execute-recon", action="store_true", help="Let the Reconnaissance Agent run active allowlisted probes.")
     parser.add_argument("--execute-validation", action="store_true", help="Select and run matching capability validation tools after recon.")
     parser.add_argument("--max-capabilities", type=int, default=5, help="Maximum matching validation capabilities to execute.")
@@ -214,6 +238,7 @@ def main() -> None:
         max_tools=args.max_tools,
         max_failed_rounds=args.max_failed_rounds,
         stop_on_success=not args.no_stop_on_success,
+        web_auth_contexts=load_auth_contexts(args.auth_contexts),
     )
     saved = save_campaign_run(run, Path(args.output_dir))
     graph_update = None

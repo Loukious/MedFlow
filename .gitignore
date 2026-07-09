@@ -8,6 +8,8 @@ data/capabilities/
 data/capability_sources/
 data/graph/
 data/generated_tools/
+data/labs/
+data/web_appsec_sources/
 data/vulhub_success_suite.json
 scripts/local/
 scripts/create_vulhub_success_suite.py
@@ -18,4 +20,5 @@ vulhub/
 *.pdf
 .cache/
 .streamlit/
+config/local/
 *.egg-info

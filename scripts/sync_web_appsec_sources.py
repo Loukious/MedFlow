@@ -19,6 +19,7 @@ REPO_SOURCES = {
     "payloadsallthethings_curated",
     "nuclei_templates_metadata",
 }
+DEFAULT_SOURCES = {"owasp_wstg", "owasp_cheat_sheets"}
 
 
 def load_config(path: Path = CONFIG) -> dict[str, Any]:
@@ -49,9 +50,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Sync optional web appsec source repositories for KB ingestion.")
     parser.add_argument("--refresh", action="store_true", help="Pull existing repositories.")
     parser.add_argument("--dest", type=Path, default=DEST)
+    parser.add_argument("--sources", nargs="*", default=None, help="Source IDs to sync. Defaults to all cloneable sources.")
     args = parser.parse_args()
     config = load_config()
-    results = [sync_source(source, args.dest, args.refresh) for source in config.get("sources", [])]
+    requested = set(args.sources or DEFAULT_SOURCES)
+    known = {str(source["id"]) for source in config.get("sources", [])}
+    unknown = sorted(requested - known)
+    if unknown:
+        raise SystemExit(f"Unknown source IDs: {', '.join(unknown)}")
+    results = [
+        sync_source(source, args.dest, args.refresh)
+        for source in config.get("sources", [])
+        if str(source["id"]) in requested
+    ]
     print(json.dumps({"destination": str(args.dest), "results": results}, indent=2))
 
 

@@ -25,7 +25,17 @@ from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_g
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.metasploit_runner import first_interesting_line, has_command_output_proof, payload_attempts
 from medflow_redteam.tools import normalize_validation_status, route_technology_signals, web_control_checks
-from medflow_redteam.web_app import WebParam, WebRoute, classify_parameter, persist_web_observation_graph, run_safe_web_probes
+from medflow_redteam.web_app import (
+    WebAuthContext,
+    WebParam,
+    WebRoute,
+    build_request,
+    classify_parameter,
+    redact_auth_context,
+    run_idor_confirmation,
+    persist_web_observation_graph,
+    run_safe_web_probes,
+)
 from medflow_redteam.web_kb import load_seed_documents
 
 
@@ -126,7 +136,7 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertIn("sql_like", route.params[0].classifications)
         self.assertIn("reflected_input", route.params[1].classifications)
 
-        def fake_fetch(url: str) -> dict:
+        def fake_fetch(url: str, auth_context: WebAuthContext | None = None) -> dict:
             if "MEDFLOW_XSS_MARKER" in url:
                 return {"ok": True, "body": f"<html>{url}</html>"}
             if "%27" in url or "'" in url:
@@ -153,6 +163,40 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertIn("web_methodology_db", collections)
         self.assertIn("web_payload_db", collections)
         self.assertTrue(any("SQL injection" in doc.text for doc in docs))
+
+    def test_idor_confirmation_requires_declared_owner_and_redacts_secrets(self) -> None:
+        route = WebRoute(
+            url="http://172.29.10.10:8080/api/records/101",
+            status=200,
+            params=[WebParam("path_segment", "path", "101", ["object_id"])],
+        )
+        owner = WebAuthContext(
+            name="alice",
+            headers={"Authorization": "Bearer alice-secret"},
+            cookies={"session": "alice-cookie"},
+            owned_object_ids=["101"],
+        )
+        alternate = WebAuthContext(name="bob", headers={"Authorization": "Bearer bob-secret"})
+
+        def fake_fetch(url: str, auth_context: WebAuthContext | None = None) -> dict:
+            if auth_context and auth_context.name in {"alice", "bob"}:
+                return {"ok": True, "status": 200, "body": "record 101 owner alice diagnosis demo"}
+            return {"ok": False}
+
+        with patch("medflow_redteam.web_app.fetch_text", side_effect=fake_fetch):
+            findings = run_idor_confirmation([route], owner, alternate)
+        self.assertEqual(findings[0].type, "idor_confirmed")
+        self.assertEqual(findings[0].status, "confirmed_vulnerability")
+
+        redacted = redact_auth_context(owner)
+        self.assertEqual(redacted["header_names"], ["Authorization"])
+        self.assertEqual(redacted["cookie_names"], ["session"])
+        self.assertNotIn("alice-secret", json.dumps(redacted))
+        self.assertEqual(build_request("http://lab/", owner).get_header("Cookie"), "session=alice-cookie")
+
+        no_owner = WebAuthContext(name="alice", headers=owner.headers)
+        with patch("medflow_redteam.web_app.fetch_text", side_effect=fake_fetch):
+            self.assertEqual(run_idor_confirmation([route], no_owner, alternate), [])
 
     def test_generated_tool_specs_from_dynamic_cache_are_valid(self) -> None:
         specs = load_generated_tool_specs()

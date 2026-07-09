@@ -17,6 +17,7 @@ from medflow_ti.config import ROOT, load_settings
 
 from .tools import validate_target
 from .web_kb import query_web_appsec
+from .web_reasoner import assess_web_observations
 
 
 DEFAULT_PATHS = ["/", "/login", "/admin", "/api", "/robots.txt"]
@@ -145,13 +146,15 @@ def run_web_assessment(
     graph_path: Path = GRAPH_PATH,
     use_kb: bool = True,
     auth_contexts: list[WebAuthContext] | None = None,
+    provider: str = "llama",
+    use_llm: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
     target = validate_target(target)
     auth_contexts = auth_contexts or []
     primary_context = auth_contexts[0] if auth_contexts else None
     routes = crawl_web(target, ports, paths=paths, max_depth=max_depth, max_routes=max_routes, auth_context=primary_context)
-    findings = run_safe_web_probes(routes, auth_context=primary_context)
+    findings = run_safe_web_probes(routes, auth_context=primary_context, provider=provider, use_llm=use_llm)
     if len(auth_contexts) >= 2:
         findings.extend(run_idor_confirmation(routes, auth_contexts[0], auth_contexts[1]))
         findings = dedupe_findings(findings)
@@ -262,12 +265,16 @@ def fetch_route(url: str, auth_context: WebAuthContext | None = None) -> WebRout
         return WebRoute(url=url, error=str(exc), body_hash=sha1_short(f"{type(exc).__name__}:{exc}:{started}"))
 
 
-def run_safe_web_probes(routes: list[WebRoute], auth_context: WebAuthContext | None = None) -> list[WebFinding]:
-    findings: list[WebFinding] = [
-        *passive_artifact_findings(routes),
-        *passive_data_exposure_findings(routes),
-        *directory_listing_findings(routes),
-    ]
+def run_safe_web_probes(
+    routes: list[WebRoute],
+    auth_context: WebAuthContext | None = None,
+    *,
+    provider: str = "llama",
+    use_llm: bool = False,
+) -> list[WebFinding]:
+    findings: list[WebFinding] = []
+    if use_llm:
+        findings.extend(WebFinding(**item) for item in assess_web_observations(web_observations(routes), provider))
     for route in routes:
         for param in route.params:
             if "sql_like" in param.classifications:
@@ -296,116 +303,21 @@ def run_safe_web_probes(routes: list[WebRoute], auth_context: WebAuthContext | N
     return dedupe_findings(findings)
 
 
-def passive_artifact_findings(routes: list[WebRoute]) -> list[WebFinding]:
-    findings: list[WebFinding] = []
-    for route in routes:
-        if route.status != 200:
-            continue
-        path = urlparse(route.url).path.lower()
-        filename = path.rsplit("/", 1)[-1]
-        if filename.endswith((".kdbx", ".pfx", ".p12", ".pem", ".key")):
-            findings.append(
-                WebFinding(
-                    type="sensitive_artifact_exposure",
-                    severity="high",
-                    confidence="high",
-                    url=route.url,
-                    evidence=f"Public route returned a sensitive credential or key-store artifact: {filename}.",
-                    proof=f"HTTP 200 with content type {route.content_type or 'unknown'}.",
-                    cwe="CWE-200",
-                    owasp="A01:2021-Broken Access Control",
-                    status="confirmed_exposure",
-                )
-            )
-        elif filename.endswith((".bak", ".old", ".orig", ".sql", ".zip", ".tar", ".gz", ".pyc")):
-            findings.append(
-                WebFinding(
-                    type="backup_or_build_artifact_exposure",
-                    severity="medium",
-                    confidence="high",
-                    url=route.url,
-                    evidence=f"Public route returned a backup or build artifact: {filename}.",
-                    proof=f"HTTP 200 with content type {route.content_type or 'unknown'}.",
-                    cwe="CWE-200",
-                    owasp="A05:2021-Security Misconfiguration",
-                    status="confirmed_exposure",
-                )
-            )
-    return findings
-
-
-def passive_data_exposure_findings(routes: list[WebRoute]) -> list[WebFinding]:
-    """Classify sensitive JSON field names without retaining their values."""
-    findings: list[WebFinding] = []
-    secret_fields = {
-        "password",
-        "passwordhash",
-        "token",
-        "accesstoken",
-        "refreshtoken",
-        "secret",
-        "totpsecret",
-        "apikey",
-        "privatekey",
-        "deluxetoken",
-    }
-    pii_fields = {"email", "phone", "address", "ssn", "dateofbirth"}
-    for route in routes:
-        if route.status != 200:
-            continue
-        signals = set(route.response_signals)
-        exposed_secrets = sorted(signals & secret_fields)
-        exposed_pii = sorted(signals & pii_fields)
-        if exposed_secrets:
-            findings.append(
-                WebFinding(
-                    type="sensitive_api_data_exposure",
-                    severity="high",
-                    confidence="high",
-                    url=route.url,
-                    evidence=f"Unauthenticated JSON response contains sensitive field names: {', '.join(exposed_secrets)}.",
-                    proof="HTTP 200 response was parsed locally; values are deliberately redacted and not retained.",
-                    cwe="CWE-200",
-                    owasp="A01:2021-Broken Access Control",
-                    status="confirmed_exposure",
-                )
-            )
-        elif exposed_pii:
-            findings.append(
-                WebFinding(
-                    type="pii_api_data_exposure",
-                    severity="medium",
-                    confidence="medium",
-                    url=route.url,
-                    evidence=f"Unauthenticated JSON response contains personal-data field names: {', '.join(exposed_pii)}.",
-                    proof="HTTP 200 response was parsed locally; values are deliberately redacted and not retained.",
-                    cwe="CWE-359",
-                    owasp="A01:2021-Broken Access Control",
-                    status="confirmed_exposure",
-                )
-            )
-    return findings
-
-
-def directory_listing_findings(routes: list[WebRoute]) -> list[WebFinding]:
-    findings: list[WebFinding] = []
-    for route in routes:
-        if route.status != 200 or not route.title.lower().startswith("listing directory"):
-            continue
-        findings.append(
-            WebFinding(
-                type="directory_listing_exposed",
-                severity="medium",
-                confidence="high",
-                url=route.url,
-                evidence="Public directory listing is enabled and exposes downloadable application artifacts.",
-                proof=f"HTTP 200 page title: {route.title[:160]}.",
-                cwe="CWE-548",
-                owasp="A05:2021-Security Misconfiguration",
-                status="confirmed_exposure",
-            )
-        )
-    return findings
+def web_observations(routes: list[WebRoute]) -> list[dict[str, Any]]:
+    """Create neutral, value-free facts for the LLM evidence-review agent."""
+    return [
+        {
+            "url": route.url,
+            "status": route.status,
+            "title": route.title[:100],
+            "content_type": route.content_type[:80],
+            "bytes": route.content_length,
+            "json_field_names": route.response_signals[:40],
+            "form_inputs": [param.name for param in route.params if param.location == "form"][:12],
+        }
+        for route in routes
+        if route.status and 200 <= route.status < 300
+    ]
 
 
 def probe_sqli(route: WebRoute, param: WebParam, auth_context: WebAuthContext | None = None) -> WebFinding | None:

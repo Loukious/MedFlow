@@ -555,6 +555,8 @@ and success criteria. Do not provide exploit instructions.
                     max_depth=2,
                     max_routes=80,
                     auth_contexts=state.get("web_auth_contexts", []),
+                    provider=state.get("provider", "llama"),
+                    use_llm=state.get("use_llm", False),
                 )
                 http_status = observation_status(http, "http_probe")
                 fingerprint_status = observation_status(fingerprints, "web_fingerprints")

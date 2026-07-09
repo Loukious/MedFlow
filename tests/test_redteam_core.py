@@ -33,8 +33,6 @@ from medflow_redteam.web_app import (
     classify_parameter,
     extract_client_routes,
     extract_robots_routes,
-    passive_artifact_findings,
-    passive_data_exposure_findings,
     redact_auth_context,
     response_signals,
     run_idor_confirmation,
@@ -178,26 +176,9 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertNotIn("/assets/app.js", routes)
         self.assertEqual(extract_robots_routes("User-agent: *\nDisallow: /ftp\nAllow: /public\n"), ["/ftp", "/public"])
 
-    def test_sensitive_artifact_exposure_detection(self) -> None:
-        findings = passive_artifact_findings(
-            [
-                WebRoute(url="http://lab/ftp/incident-support.kdbx", status=200, content_type="application/octet-stream"),
-                WebRoute(url="http://lab/ftp/package.json.bak", status=200, content_type="text/plain"),
-            ]
-        )
-        self.assertEqual({finding.type for finding in findings}, {"sensitive_artifact_exposure", "backup_or_build_artifact_exposure"})
-
-    def test_json_secret_and_directory_listing_exposure_detection(self) -> None:
+    def test_json_response_facts_are_value_free(self) -> None:
         signals = response_signals('{"data": [{"email": "redacted@example.test", "password": "not-retained", "totpSecret": "not-retained"}]}', "application/json")
-        findings = passive_data_exposure_findings(
-            [WebRoute(url="http://lab/rest/memories", status=200, content_type="application/json", response_signals=signals)]
-        )
-        self.assertEqual(findings[0].type, "sensitive_api_data_exposure")
-        self.assertIn("password", findings[0].evidence)
-        self.assertNotIn("not-retained", findings[0].evidence)
-        directory_route = WebRoute(url="http://lab/ftp", status=200, title="listing directory /ftp")
-        all_findings = run_safe_web_probes([directory_route])
-        self.assertIn("directory_listing_exposed", {finding.type for finding in all_findings})
+        self.assertEqual(signals, ["data", "email", "password", "totpsecret"])
 
     def test_idor_confirmation_requires_declared_owner_and_redacts_secrets(self) -> None:
         route = WebRoute(

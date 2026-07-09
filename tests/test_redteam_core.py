@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from medflow_graph.memory import GraphStore
-from medflow_redteam.campaign import http_ports_from_services, observation_status
+from medflow_redteam.campaign import http_ports_from_scan, http_ports_from_services, observation_status
 from medflow_redteam.capabilities import capability_match_score, select_capabilities_for_services
 from medflow_redteam.command_planner import (
     fallback_metasploit_resource,
@@ -31,6 +31,9 @@ from medflow_redteam.web_app import (
     WebRoute,
     build_request,
     classify_parameter,
+    extract_client_routes,
+    extract_robots_routes,
+    passive_artifact_findings,
     redact_auth_context,
     run_idor_confirmation,
     persist_web_observation_graph,
@@ -164,6 +167,24 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertIn("web_payload_db", collections)
         self.assertTrue(any("SQL injection" in doc.text for doc in docs))
 
+    def test_spa_and_robots_route_discovery(self) -> None:
+        routes = extract_client_routes(
+            "const a=`${host}/rest/products/search?q=${e}`; const b=\"/api/Products\"; const ignored='/assets/app.js';"
+        )
+        self.assertIn("/rest/products/search?q=", routes)
+        self.assertIn("/api/Products", routes)
+        self.assertNotIn("/assets/app.js", routes)
+        self.assertEqual(extract_robots_routes("User-agent: *\nDisallow: /ftp\nAllow: /public\n"), ["/ftp", "/public"])
+
+    def test_sensitive_artifact_exposure_detection(self) -> None:
+        findings = passive_artifact_findings(
+            [
+                WebRoute(url="http://lab/ftp/incident-support.kdbx", status=200, content_type="application/octet-stream"),
+                WebRoute(url="http://lab/ftp/package.json.bak", status=200, content_type="text/plain"),
+            ]
+        )
+        self.assertEqual({finding.type for finding in findings}, {"sensitive_artifact_exposure", "backup_or_build_artifact_exposure"})
+
     def test_idor_confirmation_requires_declared_owner_and_redacts_secrets(self) -> None:
         route = WebRoute(
             url="http://172.29.10.10:8080/api/records/101",
@@ -241,6 +262,8 @@ class RedTeamCoreTests(unittest.TestCase):
             [],
         )
         self.assertEqual(http_ports_from_services([{"port": "8180", "service": "http", "version": "Jetty"}]), [8180])
+        self.assertEqual(http_ports_from_scan("3000/tcp open ppp?\nHTTP/1.1 200 OK\nContent-Type: text/html", [3000]), [3000])
+        self.assertEqual(http_ports_from_scan("3000/tcp open ppp?", [3000]), [])
 
     def test_dynamic_command_plans_are_constrained(self) -> None:
         nmap_plan = fallback_nmap_plan("172.29.10.10", [21, 22])

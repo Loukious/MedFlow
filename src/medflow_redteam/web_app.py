@@ -23,6 +23,10 @@ DEFAULT_PATHS = ["/", "/login", "/admin", "/api", "/robots.txt"]
 SAFE_SQLI_PROBES = ["'", "\"", "')"]
 XSS_MARKER = "MEDFLOW_XSS_MARKER_7f3a"
 GRAPH_PATH = ROOT / "data" / "graph" / "web_observation_graph.json"
+MAX_SCRIPT_ASSETS = 6
+MAX_HTML_BYTES = 32768
+MAX_SCRIPT_BYTES = 2 * 1024 * 1024
+MAX_API_DESCRIPTION_BYTES = 512 * 1024
 
 
 @dataclass
@@ -206,10 +210,21 @@ def crawl_web(
         routes.append(route)
         if depth >= max_depth:
             continue
-        for link in route.links[:20]:
+        ordered_links = sorted(route.links[:30], key=route_link_priority)
+        script_assets = 0
+        for link in ordered_links:
             absolute = urljoin(route.url, link)
-            if same_origin(absolute, route.url):
-                queue.append((absolute, depth + 1))
+            if not same_origin(absolute, route.url):
+                continue
+            if is_script_asset(absolute):
+                if script_assets >= MAX_SCRIPT_ASSETS:
+                    continue
+                script_assets += 1
+            item = (absolute, depth + 1)
+            if looks_like_api_route(absolute):
+                queue.insert(0, item)
+            else:
+                queue.append(item)
     return routes
 
 
@@ -218,28 +233,35 @@ def fetch_route(url: str, auth_context: WebAuthContext | None = None) -> WebRout
     try:
         request = build_request(url, auth_context=auth_context)
         with urlopen(request, timeout=5) as response:
-            body_bytes = response.read(32768)
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            content_type = headers.get("content-type", "")
+            body_limit = response_body_limit(url, content_type)
+            body_bytes = response.read(body_limit)
             body = body_bytes.decode("utf-8", errors="replace")
             parser = LinkFormParser()
             parser.feed(body)
-            headers = {key.lower(): value for key, value in response.headers.items()}
+            discovered_links = parser.links
+            if is_javascript_response(url, content_type):
+                discovered_links = [*discovered_links, *extract_client_routes(body)]
+            if urlparse(url).path.endswith("/robots.txt"):
+                discovered_links = [*discovered_links, *extract_robots_routes(body)]
             return WebRoute(
                 url=url,
                 status=response.status,
                 title=parser.title,
-                content_type=headers.get("content-type", ""),
+                content_type=content_type,
                 content_length=len(body_bytes),
                 body_hash=sha1_short(body),
                 params=[],
                 forms=parser.forms,
-                links=parser.links,
+                links=dedupe_strings(discovered_links),
             )
     except Exception as exc:
         return WebRoute(url=url, error=str(exc), body_hash=sha1_short(f"{type(exc).__name__}:{exc}:{started}"))
 
 
 def run_safe_web_probes(routes: list[WebRoute], auth_context: WebAuthContext | None = None) -> list[WebFinding]:
-    findings: list[WebFinding] = []
+    findings: list[WebFinding] = passive_artifact_findings(routes)
     for route in routes:
         for param in route.params:
             if "sql_like" in param.classifications:
@@ -266,6 +288,44 @@ def run_safe_web_probes(routes: list[WebRoute], auth_context: WebAuthContext | N
                     )
                 )
     return dedupe_findings(findings)
+
+
+def passive_artifact_findings(routes: list[WebRoute]) -> list[WebFinding]:
+    findings: list[WebFinding] = []
+    for route in routes:
+        if route.status != 200:
+            continue
+        path = urlparse(route.url).path.lower()
+        filename = path.rsplit("/", 1)[-1]
+        if filename.endswith((".kdbx", ".pfx", ".p12", ".pem", ".key")):
+            findings.append(
+                WebFinding(
+                    type="sensitive_artifact_exposure",
+                    severity="high",
+                    confidence="high",
+                    url=route.url,
+                    evidence=f"Public route returned a sensitive credential or key-store artifact: {filename}.",
+                    proof=f"HTTP 200 with content type {route.content_type or 'unknown'}.",
+                    cwe="CWE-200",
+                    owasp="A01:2021-Broken Access Control",
+                    status="confirmed_exposure",
+                )
+            )
+        elif filename.endswith((".bak", ".old", ".orig", ".sql", ".zip", ".tar", ".gz", ".pyc")):
+            findings.append(
+                WebFinding(
+                    type="backup_or_build_artifact_exposure",
+                    severity="medium",
+                    confidence="high",
+                    url=route.url,
+                    evidence=f"Public route returned a backup or build artifact: {filename}.",
+                    proof=f"HTTP 200 with content type {route.content_type or 'unknown'}.",
+                    cwe="CWE-200",
+                    owasp="A05:2021-Security Misconfiguration",
+                    status="confirmed_exposure",
+                )
+            )
+    return findings
 
 
 def probe_sqli(route: WebRoute, param: WebParam, auth_context: WebAuthContext | None = None) -> WebFinding | None:
@@ -498,7 +558,7 @@ def query_params_from_url(url: str) -> list[WebParam]:
 def classify_parameter(name: str, value: str = "") -> list[str]:
     text = f"{name} {value}".lower()
     classes: list[str] = []
-    if re.search(r"\b(id|uid|user|account|patient|record|order|invoice|file|doc|document|uuid|key)\b", text) or is_object_reference(value):
+    if re.search(r"\b(id|uid|user|account|patient|record|order|invoice|file|doc|document|uuid)\b", text) or is_object_reference(value):
         classes.append("object_id")
     if any(term in text for term in ["q", "query", "search", "keyword", "term", "filter"]):
         classes.append("search")
@@ -549,6 +609,73 @@ def sql_error_signature(body: str) -> str:
         if match:
             return match.group(0)[:220]
     return ""
+
+
+def is_javascript_response(url: str, content_type: str) -> bool:
+    path = urlparse(url).path.lower()
+    return path.endswith((".js", ".mjs")) or "javascript" in content_type.lower()
+
+
+def response_body_limit(url: str, content_type: str) -> int:
+    if is_javascript_response(url, content_type):
+        return MAX_SCRIPT_BYTES
+    if "json" in content_type.lower() or urlparse(url).path.lower().endswith(("openapi.json", "swagger.json")):
+        return MAX_API_DESCRIPTION_BYTES
+    return MAX_HTML_BYTES
+
+
+def is_script_asset(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return path.endswith((".js", ".mjs"))
+
+
+def route_link_priority(link: str) -> tuple[int, str]:
+    path = urlparse(link).path.lower()
+    name = path.rsplit("/", 1)[-1]
+    if looks_like_api_route(link):
+        return (0, path)
+    if is_script_asset(link) and any(token in name for token in ["main", "app", "index"]):
+        return (1, path)
+    if not is_script_asset(link):
+        return (2, path)
+    return (3, path)
+
+
+def looks_like_api_route(url: str) -> bool:
+    path = urlparse(url).path.lower()
+    return path.startswith(("/api/", "/rest/", "/graphql", "/v1/", "/v2/"))
+
+
+def extract_client_routes(body: str) -> list[str]:
+    """Extract static relative API paths from JavaScript without executing it."""
+    candidates: list[str] = []
+    pattern = re.compile(r"(?:['\"`])(/(?:api|rest|graphql|v[0-9]+)[A-Za-z0-9_./?=&%+\-]*)(?:['\"`])")
+    for match in pattern.finditer(body):
+        candidate = match.group(1)
+        if len(candidate) > 240 or any(token in candidate for token in ["{", "}", "${", ".."]):
+            continue
+        candidates.append(candidate)
+    template_query_pattern = re.compile(
+        r"`(?:\$\{[^}]+\})?(/(?:api|rest|graphql|v[0-9]+)[A-Za-z0-9_./?=&%+\-]*\?[^`]*=)\$\{[^}]+\}[^`]*`"
+    )
+    for match in template_query_pattern.finditer(body):
+        candidate = match.group(1)
+        if len(candidate) <= 240 and ".." not in candidate:
+            candidates.append(candidate)
+    return dedupe_strings(candidates)
+
+
+def extract_robots_routes(body: str) -> list[str]:
+    routes = []
+    for line in body.splitlines():
+        match = re.match(r"\s*(?:allow|disallow)\s*:\s*(/[^\s#]*)", line, flags=re.I)
+        if match:
+            routes.append(match.group(1))
+    return dedupe_strings(routes)
+
+
+def dedupe_strings(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(value for value in values if value))
 
 
 def base_url(target: str, port: int) -> str:

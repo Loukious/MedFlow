@@ -187,6 +187,15 @@ def http_ports_from_services(services: list[dict[str, str]]) -> list[int]:
     return sorted(set(ports))
 
 
+def http_ports_from_scan(scan_output: str, open_ports: list[int]) -> list[int]:
+    """Recover HTTP ports when Nmap has an unknown service label but captured HTTP evidence."""
+    lowered = scan_output.lower()
+    http_markers = ["http/1.", "http/2", "content-type:", "set-cookie:", "x-frame-options:", "server:"]
+    if any(marker in lowered for marker in http_markers):
+        return sorted(set(open_ports))
+    return []
+
+
 def open_ports_from_tcp(tcp: dict[str, Any]) -> list[int]:
     return sorted(int(port) for port, result in tcp.items() if result.get("open") and str(port).isdigit())
 
@@ -531,7 +540,11 @@ and success criteria. Do not provide exploit instructions.
             services = parse_open_services(nmap_result.stdout)
             if not services and open_ports:
                 services = infer_services_from_ports(open_ports)
-            http_ports = recon_strategy.get("http_probe_ports") or http_ports_from_services(services)
+            http_ports = (
+                recon_strategy.get("http_probe_ports")
+                or http_ports_from_services(services)
+                or http_ports_from_scan(nmap_result.stdout, open_ports)
+            )
             if http_ports:
                 http = http_probe(target, ports=http_ports)
                 fingerprints = web_fingerprint(target, ports=http_ports)
@@ -539,8 +552,8 @@ and success criteria. Do not provide exploit instructions.
                 web_assessment = run_web_assessment(
                     target,
                     http_ports,
-                    max_depth=1,
-                    max_routes=24,
+                    max_depth=2,
+                    max_routes=80,
                     auth_contexts=state.get("web_auth_contexts", []),
                 )
                 http_status = observation_status(http, "http_probe")

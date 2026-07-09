@@ -4,7 +4,6 @@ import ipaddress
 import json
 import re
 import socket
-import subprocess
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -90,15 +89,6 @@ def service_scan(target: str, ports: list[int] | None = None, profile: str | Non
     if plan.get("generated_by"):
         stdout = f"[medflow_command_plan] {json.dumps({k: v for k, v in plan.items() if k != 'llm_raw'}, default=str)}\n{stdout}"
     return ToolResult("nmap", command, proc.returncode, stdout, proc.stderr, elapsed)
-
-
-def safe_script_scan(target: str, ports: list[int] | None = None, profile: str | None = None) -> ToolResult:
-    target = validate_target(target)
-    selected_ports = ports or default_ports_for_target(target)
-    command = ["nmap", "-sC", "-Pn", "--script", "default,safe", "-p", ",".join(str(port) for port in selected_ports), target]
-    started = time.perf_counter()
-    proc = subprocess.run(command, text=True, capture_output=True, timeout=180, check=False)
-    return ToolResult("nmap", command, proc.returncode, proc.stdout, proc.stderr, time.perf_counter() - started)
 
 
 def http_probe(target: str, ports: list[int] | None = None) -> dict:

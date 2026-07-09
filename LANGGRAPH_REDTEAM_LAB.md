@@ -7,7 +7,7 @@ This milestone implementation keeps the red-team code separate from the Streamli
 - `config/redteam_lab.json` defines lab target safety, scan ports, and Docker lab settings.
 - `config/generated_tools/tool_specs.json` is intentionally empty; no generated Python tools are committed as baseline capabilities.
 - `data/generated_tools/` stores on-demand generated tools created during experimentation.
-- `scripts/build_capability_inventory.py` builds a provider-backed capability inventory from Metasploit metadata, Nuclei templates, and local Nmap NSE scripts.
+- `scripts/build_capability_inventory.py` builds a provider-backed capability inventory from Metasploit metadata, Nuclei templates, and local NSE metadata.
 - `data/capabilities/capability_inventory.json` stores the generated capability inventory.
 - `src/medflow_redteam/docker_lab.py` manages the Docker lab.
 - `src/medflow_redteam/tools.py` keeps target safety checks, runtime recon helpers, parsers, and provider-backed execution dispatch.
@@ -36,14 +36,13 @@ The launcher also requests localhost port bindings for convenience, but in this 
 The LangGraph lab workflow runs these nodes in order:
 
 1. `recon_connectivity`: runs the runtime TCP connectivity check.
-2. `recon_nmap`: runs runtime Nmap service discovery.
-3. `validate_safe_scripts`: optionally runs Nmap default/safe scripts against open ports only.
-4. `probe_http`: runs runtime HTTP probing.
-5. `select_exploit_tool`: uses observed service evidence to choose matching provider-backed capabilities from the inventory.
-6. `controlled_exploitation`: optionally executes the selected exploit tool.
-7. `retrieve_attack_context`: searches the MedFlow/ATT&CK vector knowledge bases.
-8. `safety_gate`: checks the planned content against the project safety boundary.
-9. `report`: asks the selected LLM to produce a concise validation report.
+2. `recon_nmap`: runs LLM-planned, validator-gated service discovery command generation.
+3. `probe_http`: runs runtime HTTP probing for ports selected by the reconnaissance strategy.
+4. `select_exploit_tool`: uses observed service evidence to build a candidate pool.
+5. `controlled_exploitation`: optionally executes LLM-selected validation candidates.
+6. `retrieve_attack_context`: searches the MedFlow/ATT&CK vector knowledge bases.
+7. `safety_gate`: checks the planned content against the project safety boundary.
+8. `report`: asks the selected LLM to produce a concise validation report.
 
 The workflow is intentionally validation-focused. It does not run exploit modules, credential theft, persistence, evasion, destructive actions, or attacks against non-lab systems.
 
@@ -54,7 +53,7 @@ The campaign workflow converts a high-level red-team goal into a role-separated 
 The campaign graph runs these cooperating agents:
 
 1. `Campaign Orchestrator Agent`: defines the campaign charter, phases, role tasking, constraints, and success criteria.
-2. `Reconnaissance Agent`: collects or plans attack-surface evidence. With `--execute-recon`, it can run active TCP, Nmap, and HTTP probes against an allowlisted target.
+2. `Reconnaissance Agent`: collects or plans attack-surface evidence. With `--execute-recon`, it runs active TCP checks, asks the LLM which observed ports deserve deeper inspection, then executes validator-gated service discovery and HTTP probes against an allowlisted target.
 3. `Identity Attack Agent`: models safe identity validation paths using BloodHound, SharpHound, Impacket, Kerbrute, IdP telemetry, and SIEM evidence as tool families.
 4. `Web/API Attack Agent`: designs healthcare portal and API validation using Burp Suite, OWASP ZAP, Postman, and HTTP evidence as tool families.
 5. `Blockchain Security Agent`: decides whether blockchain is in scope, and if so plans smart-contract and wallet/event-log validation using Slither, Mythril, and Hardhat as tool families.
@@ -76,7 +75,7 @@ The exploitation phase is opt-in. The graph first chooses from the generated cap
 - On-demand generated Python tools from `data/generated_tools/`, when explicitly created.
 - Metasploit module metadata from `data/capability_sources/metasploit-framework`.
 - Nuclei template metadata from `data/capability_sources/nuclei-templates`.
-- Local Nmap NSE script metadata from `/usr/share/nmap/scripts`.
+- Local NSE script metadata from `/usr/share/nmap/scripts`.
 
 There are no current seed generated tools. That means the action is not selected by a hidden hardcoded `if` in the execution step. LangGraph runs a selection node, records the matching reasons, and then passes selected provider capabilities to the execution node.
 
@@ -101,12 +100,12 @@ These values are now outside the agent logic:
 - Default scan ports and HTTP probe ports.
 - Locally generated Python tool capability entries from `data/generated_tools/`, when explicitly created.
 - Capability match rules: service, ports, and product/version keywords.
-- Provider-backed capability metadata from Metasploit, Nuclei, and Nmap NSE.
+- Provider-backed capability metadata from Metasploit, Nuclei, and NSE.
 
 The code still intentionally enforces:
 
 - Target validation against configured localhost names and CIDR allowlist.
-- Execution dispatch: Metasploit can run through the gated lab adapter; Nuclei and Nmap NSE provider entries are metadata-only for now.
+- Execution dispatch: Metasploit can run through the gated lab adapter; Nuclei and NSE provider entries are metadata-only for now.
 - Cleanup verification after exploitation.
 - Safety/reporting boundaries.
 
@@ -259,14 +258,14 @@ The deployable LangGraph agent does not depend on Docker. Docker is only used by
 The current deployable agent tools are:
 
 - TCP connectivity checks.
-- Runtime service discovery.
-- Optional safe script validation.
+- LLM-planned, validator-gated service discovery.
 - HTTP probing.
-- Capability candidate selection from the generated inventory.
-- Metasploit module option and payload planning.
+- Capability candidate lookup from the generated inventory.
+- LLM-assisted validation target selection.
+- Metasploit module option, payload, and resource planning.
 - Gated Metasploit `plan`, `check`, and lab-only `exploit` execution for allowlisted lab targets.
 - On-demand generated Python tool support through `data/generated_tools/`.
-- Provider metadata ranking for Nmap NSE, Nuclei, and Metasploit sources.
+- Provider metadata ranking for NSE, Nuclei, and Metasploit sources.
 - MedFlow/ATT&CK retrieval.
 - Safety review.
 - LLM narrative reporting.
@@ -291,7 +290,7 @@ The inventory builder currently produced about 19k provider capabilities:
 
 - Metasploit metadata: module paths, CVEs extracted from Ruby module references, service hints, ports, product keywords, platform/architecture hints, default payloads, and safety metadata.
 - Nuclei templates: template IDs, tags, CVEs, severity, and HTTP/service hints.
-- Nmap NSE scripts: categories, service/port hints, and runtime safety classification.
+- NSE metadata: categories, service/port hints, and runtime safety classification.
 
 The selector can recommend provider metadata. Metasploit modules are handled by a separate gated runner:
 
@@ -299,13 +298,13 @@ The selector can recommend provider metadata. Metasploit modules are handled by 
 - `aggressive_lab` mode with `--metasploit-action check` runs `msfconsole check` against allowlisted lab targets.
 - `aggressive_lab` mode with `--metasploit-action exploit` can run the selected Metasploit module, prefer command/reverse/fetch payloads when available, infer `LHOST` and fetch-server addresses from the route to the target, collect session/command proof, and attempt session cleanup.
 
-Nuclei and NSE provider items are still metadata-only until an on-demand generated tool or dedicated adapter is created for that behavior.
+Nuclei and NSE provider items are metadata-only until an on-demand generated tool or dedicated adapter is created for that behavior.
 
 Execution policy:
 
 - In `safe` mode, generated tools are not auto-executed by the main campaign unless explicitly created and wired in.
 - In `aggressive_lab` mode, Metasploit modules can run the requested `--metasploit-action`.
-- Provider metadata from Nuclei and Nmap NSE is used for selection/recommendation, not direct execution.
+- Provider metadata from Nuclei and NSE is used for selection/recommendation, not direct execution.
 - Brute-force, credential, hash, password, persistence, and DoS behavior remains blocked by generation prompts, static validation, and generated-tool review.
 
 If a Nuclei or NSE provider capability has no executable adapter, the runner reports it as metadata-only instead of executing it directly.
@@ -317,7 +316,7 @@ scripts/install_redteam_tools.sh nuclei
 scripts/install_redteam_tools.sh metasploit
 ```
 
-These external tools are useful for creating and testing future generated tools. MedFlow executes Metasploit only through the gated lab adapter; Nuclei and Nmap NSE remain metadata-only unless represented by a future generated tool or adapter.
+These external tools are useful for creating and testing future generated tools. MedFlow executes Metasploit only through the gated lab adapter; Nuclei and NSE remain metadata-only unless represented by a future generated tool or adapter.
 
 ## Remaining Architecture Work
 
@@ -350,25 +349,25 @@ python scripts/run_langgraph_redteam_lab.py --setup-lab --recreate-lab --use-sud
 Run a fast comparison/demo pass:
 
 ```bash
-python scripts/run_langgraph_redteam_lab.py --provider llama --skip-safe-scripts --sources --traces
+python scripts/run_langgraph_redteam_lab.py --provider llama --sources --traces
 ```
 
 Run a fast pass with controlled exploitation evidence:
 
 ```bash
-sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --skip-safe-scripts --exploit-validation --use-sudo --sources --traces
+sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --exploit-validation --use-sudo --sources --traces
 ```
 
 Run the top three selected capabilities:
 
 ```bash
-sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --skip-safe-scripts --exploit-validation --max-exploits 3 --use-sudo
+sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --exploit-validation --max-exploits 3 --use-sudo
 ```
 
 Run a broader lab-only validation pass:
 
 ```bash
-sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --skip-safe-scripts --exploit-validation --max-exploits 10 --execution-mode aggressive_lab --use-sudo
+sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --exploit-validation --max-exploits 10 --execution-mode aggressive_lab --use-sudo
 ```
 
 Run the multi-agent campaign planner without active probing:
@@ -529,13 +528,13 @@ These debug views are meant for manual accuracy review. They preserve the tool t
 For direct tool validation without the multi-agent campaign layer, use the lab runner:
 
 ```bash
-python scripts/run_langgraph_redteam_lab.py --target 10.129.32.115 --ports 1-1000 --skip-safe-scripts --exploit-validation --max-exploits 8 --execution-mode aggressive_lab
+python scripts/run_langgraph_redteam_lab.py --target 10.129.32.115 --ports 1-1000 --exploit-validation --max-exploits 8 --execution-mode aggressive_lab
 ```
 
 For a cleaner demo output, omit `--sources --traces`:
 
 ```bash
-sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --skip-safe-scripts --exploit-validation --use-sudo
+sudo .venv/bin/python scripts/run_langgraph_redteam_lab.py --provider llama --exploit-validation --use-sudo
 ```
 
 Use `--report` if you want the generated narrative report printed in the terminal. The report is saved either way.

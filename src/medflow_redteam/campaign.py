@@ -19,6 +19,7 @@ from medflow_ti.config import Settings, load_settings
 from medflow_ti.llm import LLMError, is_llm_api_error
 from medflow_graph.memory import GraphStore
 
+from .command_planner import plan_recon_strategy, plan_validation_strategy
 from .evidence import normalize_validation_evidence, normalize_web_evidence, render_findings_table
 from .tools import (
     ToolResult,
@@ -66,6 +67,8 @@ class CampaignRun:
     capability_selection: dict[str, Any] | None = None
     capability_validation: dict[str, Any] | None = None
     graph_memory: dict[str, Any] | None = None
+    recon_strategy: dict[str, Any] | None = None
+    validation_strategy: dict[str, Any] | None = None
     web_checks: dict[str, Any] | None = None
     normalized_evidence: list[dict[str, Any]] = field(default_factory=list)
     loop_summary: dict[str, Any] | None = None
@@ -96,6 +99,8 @@ class CampaignState(TypedDict, total=False):
     capability_selection: dict[str, Any]
     capability_validation: dict[str, Any]
     graph_memory: dict[str, Any]
+    recon_strategy: dict[str, Any]
+    validation_strategy: dict[str, Any]
     web_checks: dict[str, Any]
     normalized_evidence: list[dict[str, Any]]
     loop_summary: dict[str, Any]
@@ -428,6 +433,18 @@ def compact_reporting_draft(state: CampaignState) -> dict[str, Any]:
     }
 
 
+def apply_validation_strategy(selection: dict[str, Any], strategy: dict[str, Any]) -> dict[str, Any]:
+    selected_ids = [str(item) for item in strategy.get("selected_ids", [])]
+    candidates = selection.get("candidates") or selection.get("selected_candidates") or []
+    by_id = {str(item.get("id")): item for item in candidates if item.get("id")}
+    selected = [by_id[cap_id] for cap_id in selected_ids if cap_id in by_id]
+    updated = {**selection}
+    updated["selected_candidates"] = selected
+    updated["selected"] = selected[0] if selected else None
+    updated["llm_validation_strategy"] = {key: value for key, value in strategy.items() if key != "llm_raw"}
+    return updated
+
+
 def build_campaign_graph(
     settings: Settings,
     provider: str = "llama",
@@ -494,12 +511,21 @@ and success criteria. Do not provide exploit instructions.
             ports = state.get("ports") or default_ports_for_target(target)
             tcp = tcp_connect_check(target, ports=ports)
             open_ports = open_ports_from_tcp(tcp)
+            recon_strategy = plan_recon_strategy(
+                state["goal"],
+                target,
+                tcp,
+                ports,
+                provider=state.get("provider", "llama"),
+                use_llm=state.get("use_llm", False),
+            )
+            service_scan_ports = recon_strategy.get("service_scan_ports") or open_ports or ports
             scan_profile = f"llm:{state.get('provider', 'llama')}" if state.get("use_llm") else None
-            nmap_result = service_scan(target, ports=open_ports or ports, profile=scan_profile)
+            nmap_result = service_scan(target, ports=service_scan_ports, profile=scan_profile)
             services = parse_open_services(nmap_result.stdout)
             if not services and open_ports:
                 services = infer_services_from_ports(open_ports)
-            http_ports = http_ports_from_services(services)
+            http_ports = recon_strategy.get("http_probe_ports") or http_ports_from_services(services)
             if http_ports:
                 http = http_probe(target, ports=http_ports)
                 fingerprints = web_fingerprint(target, ports=http_ports)
@@ -522,6 +548,7 @@ and success criteria. Do not provide exploit instructions.
             timeline = [
                 *timeline,
                 {"tool": "tcp_connect_check", "input": target, "status": "success", "evidence": f"{len(open_ports)} open TCP port(s)"},
+                {"tool": "recon_strategy_planner", "input": target, "status": recon_strategy.get("generated_by", "unknown"), "evidence": json.dumps({k: v for k, v in recon_strategy.items() if k != "llm_raw"}, indent=2)[:1200]},
                 {"tool": "service_scan", "input": " ".join(nmap_result.command or []), "status": "success" if nmap_result.returncode == 0 else "tool_error", "evidence": summarize_tool_result(nmap_result, max_chars=1200)},
                 {"tool": "http_probe", "input": target, "status": http_status, "evidence": json.dumps(http, indent=2)[:1200]},
                 {"tool": "web_fingerprint", "input": target, "status": fingerprint_status, "evidence": json.dumps(fingerprints, indent=2)[:1200]},
@@ -531,6 +558,7 @@ and success criteria. Do not provide exploit instructions.
             traces = [
                 *traces,
                 make_trace("tcp_connect_check", target, json.dumps(tcp, indent=2)),
+                make_trace("recon_strategy_planner", target, json.dumps(recon_strategy, indent=2)),
                 make_trace("service_scan", " ".join(nmap_result.command or []), summarize_tool_result(nmap_result)),
                 make_trace("http_probe", target, json.dumps(http, indent=2)),
                 make_trace("web_fingerprint", target, json.dumps(fingerprints, indent=2)),
@@ -604,6 +632,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             "web_fingerprint": fingerprints,
             "web_routes": web_routes,
             "web_checks": web_checks,
+            "recon_strategy": recon_strategy if state.get("execute_recon") and state.get("target") else state.get("recon_strategy"),
             "graph_memory": graph_memory,
             "sources": sources,
             "agents": [*state.get("agents", []), output],
@@ -637,6 +666,16 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             web_routes={**state.get("web_routes", {}), "web_fingerprints": (state.get("web_fingerprint") or {}).get("web_fingerprints", [])},
             graph_memory=state.get("graph_memory"),
         )
+        validation_strategy = plan_validation_strategy(
+            state["goal"],
+            str(state["target"]),
+            state.get("services", []),
+            selection,
+            max_capabilities=state.get("max_capabilities", 5),
+            provider=state.get("provider", "llama"),
+            use_llm=state.get("use_llm", False),
+        )
+        selection = apply_validation_strategy(selection, validation_strategy)
         validation = run_selected_exploit(
             str(state["target"]),
             selection,
@@ -667,6 +706,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
         return {
             "capability_selection": selection,
             "capability_validation": validation,
+            "validation_strategy": validation_strategy,
             "agents": [*state.get("agents", []), output],
             "steps": append_step(state, "capability validation agent selected and executed matching validation tools"),
             "phases": append_phase(
@@ -678,10 +718,17 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             "tool_traces": [
                 *state.get("tool_traces", []),
                 make_trace("select_exploit_candidate", str(state["target"]), json.dumps(selection, indent=2)),
+                make_trace("validation_strategy_planner", str(state["target"]), json.dumps(validation_strategy, indent=2)),
                 make_trace("run_selected_exploit", str(state["target"]), json.dumps(validation, indent=2)),
             ],
             "tool_timeline": [
                 *state.get("tool_timeline", []),
+                {
+                    "tool": "validation_strategy_planner",
+                    "input": str(state["target"]),
+                    "status": validation_strategy.get("generated_by", "unknown"),
+                    "evidence": json.dumps({k: v for k, v in validation_strategy.items() if k != "llm_raw"}, indent=2)[:1200],
+                },
                 {
                     "tool": "select_exploit_candidate",
                     "input": str(state["target"]),
@@ -983,6 +1030,8 @@ def run_campaign(
         "tool_traces": [],
         "tool_timeline": [],
         "graph_memory": {},
+        "recon_strategy": {},
+        "validation_strategy": {},
         "web_checks": {},
         "normalized_evidence": [],
         "loop_summary": {},
@@ -1022,6 +1071,8 @@ def run_campaign(
             capability_selection=final_state.get("capability_selection"),
             capability_validation=final_state.get("capability_validation"),
             graph_memory=final_state.get("graph_memory"),
+            recon_strategy=final_state.get("recon_strategy"),
+            validation_strategy=final_state.get("validation_strategy"),
             web_checks=final_state.get("web_checks"),
             normalized_evidence=final_state.get("normalized_evidence", []),
             loop_summary=final_state.get("loop_summary"),
@@ -1103,6 +1154,19 @@ def run_validation_loop(
         if not selected:
             stop_reason = "no_new_capabilities"
             break
+        validation_strategy = plan_validation_strategy(
+            state["goal"],
+            str(state["target"]),
+            state.get("services", []),
+            {**selection, "candidates": selected},
+            max_capabilities=max(1, min(state.get("max_capabilities", 5), max_tools - total_tools)),
+            provider=state.get("provider", "llama"),
+            use_llm=state.get("use_llm", False),
+        )
+        selection = apply_validation_strategy({**selection, "candidates": selected}, validation_strategy)
+        if not selection.get("selected_candidates"):
+            stop_reason = "planner_selected_no_new_capabilities"
+            break
         validation = run_selected_exploit(
             str(state["target"]),
             selection,
@@ -1128,6 +1192,12 @@ def run_validation_loop(
         )
         state["tool_timeline"] = [
             *state.get("tool_timeline", []),
+            {
+                "tool": "closed_loop_validation_strategy",
+                "input": f"round {round_index}",
+                "status": validation_strategy.get("generated_by", "unknown"),
+                "evidence": json.dumps({k: v for k, v in validation_strategy.items() if k != "llm_raw"}, indent=2)[:1200],
+            },
             {
                 "tool": "closed_loop_validation",
                 "input": f"round {round_index}",
@@ -1194,6 +1264,12 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         "",
         "## Capability Validation",
         json.dumps(payload.get("capability_validation") or {"status": "not run"}, indent=2),
+        "",
+        "## Recon Strategy",
+        json.dumps(payload.get("recon_strategy") or {"status": "not run"}, indent=2),
+        "",
+        "## Validation Strategy",
+        json.dumps(payload.get("validation_strategy") or {"status": "not run"}, indent=2),
         "",
         "## Closed-Loop Summary",
         json.dumps(payload.get("loop_summary") or {"status": "not enabled"}, indent=2),

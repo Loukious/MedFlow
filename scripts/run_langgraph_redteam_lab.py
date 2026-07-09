@@ -160,7 +160,6 @@ def main() -> None:
     parser.add_argument("--ports", default=None, help="Comma-separated target ports. Defaults depend on target.")
     parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
     parser.add_argument("--results", type=int, default=5, help="MedFlow/ATT&CK retrieval results per query.")
-    parser.add_argument("--skip-safe-scripts", action="store_true", help="Skip nmap default,safe NSE scripts.")
     parser.add_argument(
         "--exploit-validation",
         action="store_true",
@@ -204,7 +203,6 @@ def main() -> None:
         ports=parse_ports(args.ports),
         provider=args.provider,
         use_sudo=args.use_sudo,
-        run_safe_scripts=not args.skip_safe_scripts,
         run_exploit_validation=args.exploit_validation,
         max_exploit_candidates=args.max_exploits,
         execution_mode=args.execution_mode,

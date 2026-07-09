@@ -17,6 +17,8 @@ RAW_SECTIONS = [
     "capability_validation",
     "normalized_evidence",
     "graph_memory",
+    "recon_strategy",
+    "validation_strategy",
     "sources",
     "agents",
     "phases",

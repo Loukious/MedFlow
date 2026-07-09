@@ -11,12 +11,12 @@ from langgraph.graph import END, StateGraph
 from medflow_compare.shared_tools import call_redteam_llm, make_trace, retrieve_many, safety_review_tool
 from medflow_ti.config import Settings, load_settings
 
+from .command_planner import plan_recon_strategy, plan_validation_strategy
 from .tools import (
     ToolResult,
     default_ports_for_target,
     DEFAULT_TARGET,
     http_probe,
-    safe_script_scan,
     service_scan,
     parse_open_services,
     run_selected_exploit,
@@ -38,7 +38,6 @@ class LabRun:
     services: list[dict[str, str]]
     http: dict[str, Any]
     nmap: dict[str, Any]
-    safe_scripts: dict[str, Any] | None = None
     exploit_selection: dict[str, Any] | None = None
     exploit_validation: dict[str, Any] | None = None
     kill_chain: list[dict[str, Any]] = field(default_factory=list)
@@ -51,13 +50,13 @@ class LabState(TypedDict, total=False):
     ports: list[int]
     provider: str
     use_sudo: bool
-    run_safe_scripts: bool
     run_exploit_validation: bool
     max_exploit_candidates: int
     execution_mode: str
+    recon_strategy: dict[str, Any]
+    validation_strategy: dict[str, Any]
     tcp: dict[str, Any]
     nmap_result: ToolResult
-    safe_script_result: ToolResult
     services: list[dict[str, str]]
     http: dict[str, Any]
     exploit_selection: dict[str, Any]
@@ -152,7 +151,6 @@ def build_lab_report_prompt(state: LabState) -> str:
     tcp = json.dumps(state.get("tcp", {}), indent=2)
     services = json.dumps(state.get("services", []), indent=2)
     http = json.dumps(state.get("http", {}), indent=2)
-    safe_scripts = summarize_tool_result(state["safe_script_result"]) if state.get("safe_script_result") else "Not run."
     exploit_validation = json.dumps(state.get("exploit_validation", {"status": "Not run."}), indent=2)
     exploit_selection = json.dumps(state.get("exploit_selection", {"status": "Not run."}), indent=2)
     kill_chain = json.dumps(state.get("kill_chain", []), indent=2)
@@ -188,9 +186,6 @@ Runtime service discovery:
 
 HTTP probe:
 {http}
-
-Runtime safe script validation:
-{safe_scripts}
 
 Exploit tool selection:
 {exploit_selection}
@@ -234,37 +229,34 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
         }
 
     def recon_nmap(state: LabState) -> LabState:
-        result = service_scan(state["target"], ports=state["ports"])
+        strategy = plan_recon_strategy(
+            "Metasploitable3 lab validation",
+            state["target"],
+            state.get("tcp", {}),
+            state["ports"],
+            provider=state.get("provider", provider),
+            use_llm=True,
+        )
+        result = service_scan(state["target"], ports=strategy.get("service_scan_ports") or state["ports"], profile=f"llm:{state.get('provider', provider)}")
         services = parse_open_services(result.stdout)
         return {
+            "recon_strategy": strategy,
             "nmap_result": result,
             "services": services,
-            "steps": append_step(state, f"ran runtime service discovery and parsed {len(services)} open services"),
+            "steps": append_step(state, f"planned service discovery from TCP evidence and parsed {len(services)} open services"),
             "tool_traces": [
                 *state.get("tool_traces", []),
+                make_trace("recon_strategy_planner", state["target"], json.dumps(strategy, indent=2)),
                 make_trace("service_scan", " ".join(result.command or []), summarize_tool_result(result)),
             ],
         }
 
-    def validate_safe_scripts(state: LabState) -> LabState:
-        if not state.get("run_safe_scripts", True):
-            return {"steps": append_step(state, "skipped generated safe script validation")}
-        open_ports = [int(service["port"]) for service in state.get("services", []) if service.get("port", "").isdigit()]
-        result = safe_script_scan(state["target"], ports=open_ports or state["ports"])
-        return {
-            "safe_script_result": result,
-            "steps": append_step(state, f"ran generated safe script scan against {len(open_ports) or len(state['ports'])} lab ports"),
-            "tool_traces": [
-                *state.get("tool_traces", []),
-                make_trace("safe_script_scan", " ".join(result.command or []), summarize_tool_result(result)),
-            ],
-        }
-
     def probe_http(state: LabState) -> LabState:
-        http = http_probe(state["target"])
+        http_ports = state.get("recon_strategy", {}).get("http_probe_ports", [])
+        http = http_probe(state["target"], ports=http_ports) if http_ports else {"http_probe": []}
         return {
             "http": http,
-            "steps": append_step(state, "probed HTTP services for status, headers, and page title"),
+            "steps": append_step(state, f"probed {len(http_ports)} LLM-selected HTTP service port(s) for status, headers, and page title"),
             "tool_traces": [
                 *state.get("tool_traces", []),
                 make_trace("http_probe", state["target"], json.dumps(http, indent=2)),
@@ -277,6 +269,21 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
             state.get("services", []),
             limit=state.get("max_exploit_candidates", 1),
         )
+        strategy = plan_validation_strategy(
+            "Metasploitable3 lab validation",
+            state["target"],
+            state.get("services", []),
+            selection,
+            max_capabilities=state.get("max_exploit_candidates", 1),
+            provider=state.get("provider", provider),
+            use_llm=True,
+        )
+        by_id = {str(item.get("id")): item for item in selection.get("candidates", []) if item.get("id")}
+        selected_candidates = [by_id[cap_id] for cap_id in strategy.get("selected_ids", []) if cap_id in by_id]
+        if selected_candidates:
+            selection["selected_candidates"] = selected_candidates
+            selection["selected"] = selected_candidates[0]
+        selection["llm_validation_strategy"] = {key: value for key, value in strategy.items() if key != "llm_raw"}
         selected = selection.get("selected") or {}
         step = (
             f"selected {len(selection.get('selected_candidates', []))} exploit/tool candidate(s) from observed services"
@@ -285,10 +292,12 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
         )
         return {
             "exploit_selection": selection,
+            "validation_strategy": strategy,
             "steps": append_step(state, step),
             "tool_traces": [
                 *state.get("tool_traces", []),
                 make_trace("select_exploit_candidate", state["target"], json.dumps(selection, indent=2)),
+                make_trace("validation_strategy_planner", state["target"], json.dumps(strategy, indent=2)),
             ],
         }
 
@@ -373,7 +382,6 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
     graph = StateGraph(LabState)
     graph.add_node("recon_connectivity", recon_connectivity)
     graph.add_node("recon_nmap", recon_nmap)
-    graph.add_node("validate_safe_scripts", validate_safe_scripts)
     graph.add_node("probe_http", probe_http)
     graph.add_node("select_exploit_tool", select_exploit_tool)
     graph.add_node("controlled_exploitation", controlled_exploitation)
@@ -383,8 +391,7 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
     graph.add_node("report", report)
     graph.set_entry_point("recon_connectivity")
     graph.add_edge("recon_connectivity", "recon_nmap")
-    graph.add_edge("recon_nmap", "validate_safe_scripts")
-    graph.add_edge("validate_safe_scripts", "probe_http")
+    graph.add_edge("recon_nmap", "probe_http")
     graph.add_edge("probe_http", "select_exploit_tool")
     graph.add_edge("select_exploit_tool", "controlled_exploitation")
     graph.add_edge("controlled_exploitation", "summarize_kill_chain")
@@ -432,7 +439,6 @@ def run_redteam_lab(
     ports: list[int] | None = None,
     provider: str = "llama",
     use_sudo: bool = False,
-    run_safe_scripts: bool = True,
     run_exploit_validation: bool = False,
     max_exploit_candidates: int = 1,
     execution_mode: str = "safe",
@@ -450,7 +456,6 @@ def run_redteam_lab(
                 "ports": selected_ports,
                 "provider": provider,
                 "use_sudo": use_sudo,
-                "run_safe_scripts": run_safe_scripts,
                 "run_exploit_validation": run_exploit_validation,
                 "max_exploit_candidates": max_exploit_candidates,
                 "execution_mode": execution_mode,
@@ -460,7 +465,6 @@ def run_redteam_lab(
         )
         elapsed = time.perf_counter() - started
         nmap_result = state.get("nmap_result")
-        safe_result = state.get("safe_script_result")
         return LabRun(
             target=target,
             provider=provider,
@@ -472,7 +476,6 @@ def run_redteam_lab(
             services=state.get("services", []),
             http=state.get("http", {}),
             nmap=asdict(nmap_result) if nmap_result else {},
-            safe_scripts=asdict(safe_result) if safe_result else None,
             exploit_selection=state.get("exploit_selection"),
             exploit_validation=state.get("exploit_validation"),
             kill_chain=state.get("kill_chain", []),

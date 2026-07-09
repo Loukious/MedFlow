@@ -11,8 +11,12 @@ from medflow_redteam.capabilities import capability_match_score, select_capabili
 from medflow_redteam.command_planner import (
     fallback_metasploit_resource,
     fallback_nmap_plan,
+    fallback_recon_strategy,
+    fallback_validation_strategy,
+    validate_recon_strategy,
     validate_metasploit_resource,
     validate_nmap_argv,
+    validate_validation_strategy,
 )
 from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_generated_tool_code, validate_generated_tool_code
 from medflow_redteam.identity import analyze_identity_logs
@@ -164,6 +168,24 @@ class RedTeamCoreTests(unittest.TestCase):
                 "exploit/unix/irc/unreal_ircd_3281_backdoor",
                 "check",
             )
+
+    def test_llm_strategy_outputs_are_constrained(self) -> None:
+        recon = validate_recon_strategy(
+            {"service_scan_ports": [22, 80, 9999, "bad"], "http_probe_ports": [80, 9999], "validation_focus": ["web first"]},
+            [22, 80],
+            fallback_recon_strategy([22, 80]),
+        )
+        self.assertEqual(recon["service_scan_ports"], [22, 80])
+        self.assertEqual(recon["http_probe_ports"], [80])
+
+        candidates = [{"id": "a"}, {"id": "b"}]
+        strategy = validate_validation_strategy(
+            {"selected_ids": ["b", "unknown", "a"]},
+            candidates,
+            2,
+            fallback_validation_strategy(candidates, 2),
+        )
+        self.assertEqual(strategy["selected_ids"], ["b", "a"])
 
 
 if __name__ == "__main__":

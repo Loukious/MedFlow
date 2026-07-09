@@ -23,6 +23,7 @@ dependencies = [
   "fastapi",
   "uvicorn[standard]",
   "pymetasploit3",
+  "playwright",
 ]
 
 [project.scripts]

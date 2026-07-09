@@ -529,3 +529,15 @@ If it says `cuda available: False`, check WSL/NVIDIA driver support on the Windo
 ### Streamlit optional `torchvision` errors
 
 The app disables Streamlit file watching in `.streamlit/config.toml`, which avoids watcher errors from optional `transformers` vision modules.
+
+## 15. Agent-Led Web Validation
+
+The red-team web assessment keeps collection and safety controls deterministic, while the selected
+LLM chooses active validation work. The collector discovers routes, JSON field names, rendered DOM
+controls, and same-origin browser requests. The Web Test Planner selects up to three bounded SQLi
+or DOM-XSS proof probes from that evidence. The executor permits only observed same-origin routes,
+GET or POST, small payloads, no redirects, and a small request budget. DOM-XSS confirmation uses
+local Chromium/Playwright and accepts only a harmless `document.title` sentinel; it blocks payloads
+that access cookies/storage, redirect, open windows, or use network APIs. The Web Evidence Analyst
+then classifies the redacted responses and browser proof. Planner choices and execution results are
+included in campaign traces as `llm_web_planner` and `bounded_web_executor`.

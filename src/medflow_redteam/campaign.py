@@ -585,6 +585,9 @@ and success criteria. Do not provide exploit instructions.
                 {"tool": "web_fingerprint", "input": target, "status": fingerprint_status, "evidence": json.dumps(fingerprints, indent=2)[:1200]},
                 {"tool": "web_route_discovery", "input": target, "status": route_status, "evidence": json.dumps(web_routes, indent=2)[:1200]},
                 {"tool": "web_control_checks", "input": target, "status": findings_status(web_checks), "evidence": json.dumps(web_checks, indent=2)[:1200]},
+                {"tool": "browser_web_collector", "input": target, "status": "success" if web_assessment.get("browser_observations", {}).get("available") else "not_applicable", "evidence": json.dumps(web_assessment.get("browser_observations", {}), indent=2)[:1200]},
+                {"tool": "llm_web_planner", "input": target, "status": "success" if web_assessment.get("planned_probes") else "ran_no_finding", "evidence": json.dumps(web_assessment.get("planned_probes", []), indent=2)[:1200]},
+                {"tool": "bounded_web_executor", "input": target, "status": "success" if web_assessment.get("probe_results") else "not_applicable", "evidence": json.dumps(web_assessment.get("probe_results", []), indent=2)[:1200]},
                 {"tool": "web_app_assessment", "input": target, "status": web_assessment_status, "evidence": json.dumps({"routes": len(web_assessment.get("routes", [])), "findings": web_assessment.get("findings", []), "graph_summary": web_assessment.get("graph_summary", {})}, indent=2)[:1200]},
             ]
             traces = [

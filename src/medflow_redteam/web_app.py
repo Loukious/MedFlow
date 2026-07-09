@@ -16,13 +16,13 @@ from medflow_graph.memory import GraphStore
 from medflow_ti.config import ROOT, load_settings
 
 from .tools import validate_target
+from .web_browser import collect_browser_observations
+from .web_executor import execute_planned_probes
 from .web_kb import query_web_appsec
-from .web_reasoner import assess_web_observations
+from .web_reasoner import assess_web_observations, plan_web_probes
 
 
-DEFAULT_PATHS = ["/", "/login", "/admin", "/api", "/robots.txt"]
-SAFE_SQLI_PROBES = ["'", "\"", "')"]
-XSS_MARKER = "MEDFLOW_XSS_MARKER_7f3a"
+DEFAULT_PATHS = ["/"]
 GRAPH_PATH = ROOT / "data" / "graph" / "web_observation_graph.json"
 MAX_SCRIPT_ASSETS = 6
 MAX_HTML_BYTES = 32768
@@ -82,6 +82,9 @@ class WebAssessment:
     ports: list[int]
     routes: list[WebRoute]
     findings: list[WebFinding]
+    browser_observations: dict[str, Any]
+    planned_probes: list[dict[str, Any]]
+    probe_results: list[dict[str, Any]]
     kb_context: list[dict[str, Any]]
     auth_contexts: list[dict[str, Any]]
     graph_summary: dict[str, int]
@@ -154,7 +157,15 @@ def run_web_assessment(
     auth_contexts = auth_contexts or []
     primary_context = auth_contexts[0] if auth_contexts else None
     routes = crawl_web(target, ports, paths=paths, max_depth=max_depth, max_routes=max_routes, auth_context=primary_context)
-    findings = run_safe_web_probes(routes, auth_context=primary_context, provider=provider, use_llm=use_llm)
+    browser_observations = collect_browser_observations([route.url for route in routes if route.status and 200 <= route.status < 300]) if use_llm else {"available": False, "reason": "LLM web planning disabled."}
+    planned_probes = plan_web_probes(web_planning_context(routes, browser_observations), provider) if use_llm else []
+    probe_results = execute_planned_probes(planned_probes, web_observations(routes), auth_headers=auth_headers(primary_context)) if planned_probes else []
+    findings = run_safe_web_probes(
+        routes,
+        provider=provider,
+        use_llm=use_llm,
+        probe_results=probe_results,
+    )
     if len(auth_contexts) >= 2:
         findings.extend(run_idor_confirmation(routes, auth_contexts[0], auth_contexts[1]))
         findings = dedupe_findings(findings)
@@ -165,6 +176,9 @@ def run_web_assessment(
         ports=ports,
         routes=routes,
         findings=findings,
+        browser_observations=browser_observations,
+        planned_probes=planned_probes,
+        probe_results=probe_results,
         kb_context=kb_context,
         auth_contexts=[redact_auth_context(context) for context in auth_contexts],
         graph_summary=graph.summary(),
@@ -205,12 +219,9 @@ def crawl_web(
                             name=str(item.get("name")),
                             location="form",
                             value=str(item.get("value") or ""),
-                            classifications=classify_parameter(str(item.get("name")), str(item.get("value") or "")),
+                            classifications=[],
                         )
                     )
-        for param in route.params:
-            if not param.classifications:
-                param.classifications = classify_parameter(param.name, param.value)
         routes.append(route)
         if depth >= max_depth:
             continue
@@ -267,39 +278,14 @@ def fetch_route(url: str, auth_context: WebAuthContext | None = None) -> WebRout
 
 def run_safe_web_probes(
     routes: list[WebRoute],
-    auth_context: WebAuthContext | None = None,
     *,
     provider: str = "llama",
     use_llm: bool = False,
+    probe_results: list[dict[str, Any]] | None = None,
 ) -> list[WebFinding]:
     findings: list[WebFinding] = []
     if use_llm:
-        findings.extend(WebFinding(**item) for item in assess_web_observations(web_observations(routes), provider))
-    for route in routes:
-        for param in route.params:
-            if "sql_like" in param.classifications:
-                finding = probe_sqli(route, param, auth_context=auth_context)
-                if finding:
-                    findings.append(finding)
-            if "reflected_input" in param.classifications or "search" in param.classifications:
-                finding = probe_xss_reflection(route, param, auth_context=auth_context)
-                if finding:
-                    findings.append(finding)
-            if "object_id" in param.classifications:
-                findings.append(
-                    WebFinding(
-                        type="idor_candidate",
-                        severity="info",
-                        confidence="low",
-                        url=route.url,
-                        parameter=param.name,
-                        evidence=f"Parameter {param.name} looks like an object reference.",
-                        proof="Two auth contexts are required before confirming IDOR.",
-                        cwe="CWE-639",
-                        owasp="A01:2021-Broken Access Control",
-                        status="candidate",
-                    )
-                )
+        findings.extend(WebFinding(**item) for item in assess_web_observations(web_observations(routes), provider, probe_results))
     return dedupe_findings(findings)
 
 
@@ -314,58 +300,48 @@ def web_observations(routes: list[WebRoute]) -> list[dict[str, Any]]:
             "bytes": route.content_length,
             "json_field_names": route.response_signals[:40],
             "form_inputs": [param.name for param in route.params if param.location == "form"][:12],
+            "query_parameters": [param.name for param in route.params if param.location == "query"][:12],
         }
         for route in routes
         if route.status and 200 <= route.status < 300
     ]
 
 
-def probe_sqli(route: WebRoute, param: WebParam, auth_context: WebAuthContext | None = None) -> WebFinding | None:
-    baseline = fetch_text(route.url, auth_context=auth_context)
-    if not baseline.get("ok"):
-        return None
-    for probe in SAFE_SQLI_PROBES:
-        url = mutate_query_param(route.url, param.name, probe)
-        result = fetch_text(url, auth_context=auth_context)
-        if not result.get("ok"):
-            continue
-        body = str(result.get("body", ""))
-        evidence = sql_error_signature(body)
-        if evidence:
-            return WebFinding(
-                type="sqli_error_signal",
-                severity="medium",
-                confidence="medium",
-                url=route.url,
-                parameter=param.name,
-                evidence=evidence,
-                proof=f"Non-destructive SQL syntax probe changed response with database error signature using parameter {param.name}.",
-                cwe="CWE-89",
-                owasp="A03:2021-Injection",
-                status="suspected",
-            )
-    return None
-
-
-def probe_xss_reflection(route: WebRoute, param: WebParam, auth_context: WebAuthContext | None = None) -> WebFinding | None:
-    result = fetch_text(mutate_query_param(route.url, param.name, XSS_MARKER), auth_context=auth_context)
-    if not result.get("ok"):
-        return None
-    body = str(result.get("body", ""))
-    if XSS_MARKER not in body:
-        return None
-    return WebFinding(
-        type="xss_reflection_signal",
-        severity="low",
-        confidence="medium",
-        url=route.url,
-        parameter=param.name,
-        evidence=f"Unique marker reflected in response for parameter {param.name}.",
-        proof="Inert marker reflection observed; browser execution proof not attempted.",
-        cwe="CWE-79",
-        owasp="A03:2021-Injection",
-        status="suspected",
-    )
+def web_planning_context(routes: list[WebRoute], browser_observations: dict[str, Any]) -> dict[str, Any]:
+    candidate_routes = [
+        route
+        for route in routes
+        if route.params or "json" in route.content_type.lower() or route.status is None
+    ]
+    return {
+        "routes": [
+            {
+                "url": route.url,
+                "status": route.status,
+                "content_type": route.content_type[:50],
+                "query_parameters": [param.name for param in route.params if param.location == "query"][:8],
+                "form_inputs": [param.name for param in route.params if param.location == "form"][:8],
+            }
+            for route in candidate_routes[:24]
+        ],
+        "browser": {
+            "available": browser_observations.get("available", False),
+            "pages": [
+                {
+                    "url": page.get("url"),
+                    "controls": page.get("controls", [])[:12],
+                    "forms": page.get("forms", [])[:5],
+                }
+                for page in browser_observations.get("pages", [])
+                if page.get("controls") or page.get("forms")
+            ][:5],
+            "requests": [
+                {"url": item.get("url"), "method": item.get("method")}
+                for item in browser_observations.get("requests", [])
+                if item.get("resource_type") in {"xhr", "fetch", "document"}
+            ][:12],
+        },
+    }
 
 
 def fetch_text(url: str, auth_context: WebAuthContext | None = None) -> dict[str, Any]:
@@ -394,7 +370,7 @@ def run_idor_confirmation(
     findings: list[WebFinding] = []
     for route in routes:
         for param in route.params:
-            if "object_id" not in param.classifications or str(param.value) not in owned:
+            if str(param.value) not in owned:
                 continue
             owner_response = fetch_text(route.url, auth_context=owner_context)
             alternate_response = fetch_text(route.url, auth_context=alternate_context)
@@ -439,6 +415,15 @@ def build_request(url: str, auth_context: WebAuthContext | None = None) -> Reque
         if auth_context.cookies:
             headers["Cookie"] = "; ".join(f"{key}={value}" for key, value in auth_context.cookies.items())
     return Request(url, headers=headers)
+
+
+def auth_headers(auth_context: WebAuthContext | None) -> dict[str, str]:
+    if not auth_context:
+        return {}
+    headers = {str(key): str(value) for key, value in auth_context.headers.items()}
+    if auth_context.cookies:
+        headers["Cookie"] = "; ".join(f"{key}={value}" for key, value in auth_context.cookies.items())
+    return headers
 
 
 def redact_auth_context(context: WebAuthContext) -> dict[str, Any]:
@@ -540,67 +525,8 @@ def query_params_from_url(url: str) -> list[WebParam]:
     parsed = urlparse(url)
     params = []
     for key, value in parse_qsl(parsed.query, keep_blank_values=True):
-        params.append(WebParam(name=key, location="query", value=value, classifications=classify_parameter(key, value)))
-    for segment in parsed.path.split("/"):
-        if is_object_reference(segment):
-            params.append(WebParam(name="path_segment", location="path", value=segment, classifications=["object_id"]))
+        params.append(WebParam(name=key, location="query", value=value))
     return params
-
-
-def classify_parameter(name: str, value: str = "") -> list[str]:
-    text = f"{name} {value}".lower()
-    classes: list[str] = []
-    if re.search(r"\b(id|uid|user|account|patient|record|order|invoice|file|doc|document|uuid)\b", text) or is_object_reference(value):
-        classes.append("object_id")
-    if any(term in text for term in ["q", "query", "search", "keyword", "term", "filter"]):
-        classes.append("search")
-    if any(term in text for term in ["url", "next", "redirect", "return", "callback"]):
-        classes.append("redirect")
-    if any(term in text for term in ["path", "file", "template", "page", "include", "download"]):
-        classes.append("file_path")
-    if any(term in text for term in ["name", "message", "comment", "title", "desc", "search", "q"]):
-        classes.append("reflected_input")
-    if any(term in text for term in ["id", "select", "where", "sort", "order", "filter", "query", "search", "page"]):
-        classes.append("sql_like")
-    return sorted(set(classes)) or ["generic"]
-
-
-def is_object_reference(value: str) -> bool:
-    return bool(re.fullmatch(r"\d{1,10}", value or "") or re.fullmatch(r"[0-9a-fA-F-]{16,36}", value or ""))
-
-
-def mutate_query_param(url: str, name: str, value: str) -> str:
-    parsed = urlparse(url)
-    pairs = parse_qsl(parsed.query, keep_blank_values=True)
-    found = False
-    updated = []
-    for key, old in pairs:
-        if key == name:
-            updated.append((key, value))
-            found = True
-        else:
-            updated.append((key, old))
-    if not found:
-        updated.append((name, value))
-    return urlunparse(parsed._replace(query=urlencode(updated)))
-
-
-def sql_error_signature(body: str) -> str:
-    patterns = [
-        r"SQL syntax.*MySQL",
-        r"Warning.*mysql_",
-        r"PostgreSQL.*ERROR",
-        r"ORA-\d{5}",
-        r"SQLite/JDBCDriver",
-        r"sqlite error",
-        r"unclosed quotation mark",
-        r"ODBC SQL Server Driver",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, body, flags=re.I)
-        if match:
-            return match.group(0)[:220]
-    return ""
 
 
 def response_signals(body: str, content_type: str) -> list[str]:

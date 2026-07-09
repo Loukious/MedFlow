@@ -54,6 +54,7 @@ class WebRoute:
     content_type: str = ""
     content_length: int = 0
     body_hash: str = ""
+    response_signals: list[str] = field(default_factory=list)
     params: list[WebParam] = field(default_factory=list)
     forms: list[dict[str, Any]] = field(default_factory=list)
     links: list[str] = field(default_factory=list)
@@ -252,6 +253,7 @@ def fetch_route(url: str, auth_context: WebAuthContext | None = None) -> WebRout
                 content_type=content_type,
                 content_length=len(body_bytes),
                 body_hash=sha1_short(body),
+                response_signals=response_signals(body, content_type),
                 params=[],
                 forms=parser.forms,
                 links=dedupe_strings(discovered_links),
@@ -261,7 +263,11 @@ def fetch_route(url: str, auth_context: WebAuthContext | None = None) -> WebRout
 
 
 def run_safe_web_probes(routes: list[WebRoute], auth_context: WebAuthContext | None = None) -> list[WebFinding]:
-    findings: list[WebFinding] = passive_artifact_findings(routes)
+    findings: list[WebFinding] = [
+        *passive_artifact_findings(routes),
+        *passive_data_exposure_findings(routes),
+        *directory_listing_findings(routes),
+    ]
     for route in routes:
         for param in route.params:
             if "sql_like" in param.classifications:
@@ -325,6 +331,80 @@ def passive_artifact_findings(routes: list[WebRoute]) -> list[WebFinding]:
                     status="confirmed_exposure",
                 )
             )
+    return findings
+
+
+def passive_data_exposure_findings(routes: list[WebRoute]) -> list[WebFinding]:
+    """Classify sensitive JSON field names without retaining their values."""
+    findings: list[WebFinding] = []
+    secret_fields = {
+        "password",
+        "passwordhash",
+        "token",
+        "accesstoken",
+        "refreshtoken",
+        "secret",
+        "totpsecret",
+        "apikey",
+        "privatekey",
+        "deluxetoken",
+    }
+    pii_fields = {"email", "phone", "address", "ssn", "dateofbirth"}
+    for route in routes:
+        if route.status != 200:
+            continue
+        signals = set(route.response_signals)
+        exposed_secrets = sorted(signals & secret_fields)
+        exposed_pii = sorted(signals & pii_fields)
+        if exposed_secrets:
+            findings.append(
+                WebFinding(
+                    type="sensitive_api_data_exposure",
+                    severity="high",
+                    confidence="high",
+                    url=route.url,
+                    evidence=f"Unauthenticated JSON response contains sensitive field names: {', '.join(exposed_secrets)}.",
+                    proof="HTTP 200 response was parsed locally; values are deliberately redacted and not retained.",
+                    cwe="CWE-200",
+                    owasp="A01:2021-Broken Access Control",
+                    status="confirmed_exposure",
+                )
+            )
+        elif exposed_pii:
+            findings.append(
+                WebFinding(
+                    type="pii_api_data_exposure",
+                    severity="medium",
+                    confidence="medium",
+                    url=route.url,
+                    evidence=f"Unauthenticated JSON response contains personal-data field names: {', '.join(exposed_pii)}.",
+                    proof="HTTP 200 response was parsed locally; values are deliberately redacted and not retained.",
+                    cwe="CWE-359",
+                    owasp="A01:2021-Broken Access Control",
+                    status="confirmed_exposure",
+                )
+            )
+    return findings
+
+
+def directory_listing_findings(routes: list[WebRoute]) -> list[WebFinding]:
+    findings: list[WebFinding] = []
+    for route in routes:
+        if route.status != 200 or not route.title.lower().startswith("listing directory"):
+            continue
+        findings.append(
+            WebFinding(
+                type="directory_listing_exposed",
+                severity="medium",
+                confidence="high",
+                url=route.url,
+                evidence="Public directory listing is enabled and exposes downloadable application artifacts.",
+                proof=f"HTTP 200 page title: {route.title[:160]}.",
+                cwe="CWE-548",
+                owasp="A05:2021-Security Misconfiguration",
+                status="confirmed_exposure",
+            )
+        )
     return findings
 
 
@@ -609,6 +689,31 @@ def sql_error_signature(body: str) -> str:
         if match:
             return match.group(0)[:220]
     return ""
+
+
+def response_signals(body: str, content_type: str) -> list[str]:
+    """Return JSON key names only, so reports never persist returned secret values."""
+    if "json" not in content_type.lower():
+        return []
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return []
+    fields: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, nested in value.items():
+                normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
+                if normalized:
+                    fields.add(normalized)
+                visit(nested)
+        elif isinstance(value, list):
+            for nested in value[:100]:
+                visit(nested)
+
+    visit(payload)
+    return sorted(fields)
 
 
 def is_javascript_response(url: str, content_type: str) -> bool:

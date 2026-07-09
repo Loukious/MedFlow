@@ -10,6 +10,7 @@ from typing import Any
 from .command_planner import (
     metasploit_backend,
     plan_metasploit_resource,
+    plan_proof_command,
     rpc_settings,
     start_msfrpcd_if_requested,
 )
@@ -69,6 +70,16 @@ def run_metasploit_module(
         }
 
     attempts = []
+    proof_command_plan = plan_proof_command(
+        {
+            "target": target,
+            "module": plan.get("module_path"),
+            "service": capability.get("matched_service") or {},
+            "payload_candidates": plan.get("payload_candidates", []),
+        },
+        provider=provider,
+        use_llm=use_llm and action == "exploit",
+    )
     payloads = payload_attempts(plan) if action == "exploit" else [plan.get("selected_payload", "")]
     final: dict[str, Any] | None = None
     for selected_payload in payloads:
@@ -76,6 +87,8 @@ def run_metasploit_module(
             attempt_options = dict(variant_options)
             if action == "exploit":
                 attempt_options = {**attempt_options, **exploit_payload_options(target, selected_payload)}
+                if selected_payload == "cmd/unix/generic":
+                    attempt_options["CMD"] = proof_command_plan["command"]
             proc, stdout, stderr, elapsed, command = run_msfconsole_action(
                 msfconsole,
                 plan.get("module_path"),
@@ -90,11 +103,12 @@ def run_metasploit_module(
             combined = stdout + "\n" + stderr
             verdict = parse_check_verdict(combined)
             session_created = bool(re.search(r"(command shell|meterpreter) session \d+ opened", combined, re.I))
-            command_proof = bool(re.search(r"\buid=\d+.*\bgid=\d+", combined))
+            command_proof = has_command_output_proof(combined, proof_command_plan["command"])
             command_executed = bool(re.search(r"\[\+\]\s+command executed\b", combined, re.I))
-            exploited = action == "exploit" and (session_created or command_proof or command_executed)
+            exploited = action == "exploit" and (session_created or command_proof)
             final = {
                 "payload": selected_payload,
+                "proof_command": proof_command_plan["command"] if action == "exploit" else "",
                 "options": attempt_options,
                 "command": command,
                 "returncode": proc.returncode,
@@ -144,13 +158,14 @@ def run_metasploit_module(
         "exploited": exploited,
         "cleanup_verified": "killing all sessions" in f"{stdout}\n{stderr}".lower() or not session_created,
         "reason": exploit_reason(verdict, exploited, session_created, command_executed) if action == "exploit" else check_reason(verdict),
-        "proof_output": first_interesting_line(stdout) if verified else "",
+        "proof_output": first_interesting_line(stdout, final.get("proof_command", "")) if verified else "",
         "proof_goal": (
             "Run Metasploit exploit against an allowlisted isolated lab target and collect session proof."
             if action == "exploit"
             else "Run Metasploit check against an allowlisted lab target; do not execute exploit."
         ),
         "metasploit_plan": {**plan, "options": final["options"], "attempted_payloads": payloads},
+        "proof_command_plan": proof_command_plan,
         "metasploit_check": {
             "command": redact_command(final["command"]),
             "returncode": final["returncode"],
@@ -163,6 +178,7 @@ def run_metasploit_module(
             "command_proof": command_proof,
             "command_executed": command_executed,
             "payload": final["payload"],
+            "proof_command": final.get("proof_command", ""),
             "attempts": attempts,
         },
     }
@@ -263,6 +279,8 @@ def payload_attempts(plan: dict[str, Any]) -> list[str]:
             add(str(item.get("payload") or ""))
         else:
             add(str(item))
+    if "cmd/unix/generic" in payloads:
+        payloads = ["cmd/unix/generic", *[payload for payload in payloads if payload != "cmd/unix/generic"]]
     return payloads[:4] or [""]
 
 
@@ -300,6 +318,7 @@ def should_retry_payload(output: str) -> bool:
 def summarize_attempt(attempt: dict[str, Any]) -> dict[str, Any]:
     return {
         "payload": attempt.get("payload", ""),
+        "proof_command": attempt.get("proof_command", ""),
         "returncode": attempt.get("returncode"),
         "verdict": attempt.get("verdict"),
         "session_created": attempt.get("session_created", False),
@@ -365,12 +384,14 @@ def exploit_reason(verdict: str, exploited: bool, session_created: bool, command
         return "Metasploit reported command execution in the isolated lab."
     if exploited:
         return "Metasploit exploit produced command-execution proof in the isolated lab."
+    if command_executed:
+        return "Metasploit reported command execution, but no allowed proof-command output or session proof was collected."
     if verdict == "appears_vulnerable":
         return "Metasploit exploit reached a vulnerable target signal, but no session or command proof was collected."
     return check_reason(verdict)
 
 
-def first_interesting_line(output: str) -> str:
+def first_interesting_line(output: str, proof_command: str = "") -> str:
     for line in output.splitlines():
         lowered = line.lower()
         if "session" in lowered and "opened" in lowered:
@@ -378,6 +399,9 @@ def first_interesting_line(output: str) -> str:
     for line in output.splitlines():
         if re.search(r"\buid=\d+.*\bgid=\d+", line):
             return line.strip()
+    proof_line = first_proof_command_line(output, proof_command)
+    if proof_line:
+        return proof_line
     for line in output.splitlines():
         if re.search(r"\[\+\]\s+command executed\b", line, flags=re.I):
             return line.strip()
@@ -385,6 +409,36 @@ def first_interesting_line(output: str) -> str:
         lowered = line.lower()
         if "appears to be vulnerable" in lowered or "is vulnerable" in lowered:
             return line.strip()
+    return ""
+
+
+def has_command_output_proof(output: str, command: str) -> bool:
+    if command == "id":
+        return bool(re.search(r"\buid=\d+.*\bgid=\d+", output))
+    if command == "whoami":
+        return any(re.fullmatch(r"[A-Za-z0-9_.\\-\\\\/]+", line.strip()) for line in output.splitlines())
+    if command == "pwd":
+        return any(re.fullmatch(r"/[A-Za-z0-9_./\\-]*", line.strip()) for line in output.splitlines())
+    if command == "hostname":
+        return any(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,252}", line.strip()) for line in output.splitlines())
+    if command == "uname -a":
+        return any("linux" in line.lower() or "gnu" in line.lower() for line in output.splitlines())
+    return False
+
+
+def first_proof_command_line(output: str, command: str) -> str:
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if command == "whoami" and re.fullmatch(r"[A-Za-z0-9_.\\-\\\\/]+", stripped):
+            return stripped
+        if command == "pwd" and re.fullmatch(r"/[A-Za-z0-9_./\\-]*", stripped):
+            return stripped
+        if command == "hostname" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,252}", stripped):
+            return stripped
+        if command == "uname -a" and ("linux" in stripped.lower() or "gnu" in stripped.lower()):
+            return stripped
     return ""
 
 

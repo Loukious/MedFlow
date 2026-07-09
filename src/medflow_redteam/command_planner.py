@@ -43,6 +43,13 @@ ALLOWED_SET_KEYS = {
     "URI",
     "VHOST",
 }
+ALLOWED_PROOF_COMMANDS = {
+    "id": "Show the effective Unix user and groups.",
+    "whoami": "Show the effective username.",
+    "pwd": "Show the current working directory.",
+    "hostname": "Show the target hostname.",
+    "uname -a": "Show kernel/platform information.",
+}
 
 
 def plan_nmap_command(
@@ -164,7 +171,7 @@ Rules:
 - Do not include shell commands, backticks, semicolons inside values, file writes, persistence, credential dumping, or evasion.
 - If action is check, end with check and exit -y.
 - If action is exploit, use run -j, sleep, sessions -l, sessions -K, exit -y.
-- For cmd/unix/generic exploit payloads, set CMD id.
+- For cmd/unix/generic exploit payloads, set CMD to the exact value already present in Options JSON.
 """
     try:
         raw = call_redteam_llm(prompt, settings=load_settings(), provider=provider)
@@ -199,7 +206,7 @@ def fallback_metasploit_resource(
             resource_lines.append(f"set {key} {value}")
     if selected_payload:
         resource_lines.append(f"set PAYLOAD {selected_payload}")
-    if action == "exploit" and selected_payload == "cmd/unix/generic":
+    if action == "exploit" and selected_payload == "cmd/unix/generic" and not any(line.startswith("set CMD ") for line in resource_lines):
         resource_lines.append("set CMD id")
     if action == "exploit":
         resource_lines.extend(["run -j", "sleep 12", "sessions -l", "sessions -K", "exit -y"])
@@ -232,6 +239,8 @@ def validate_metasploit_resource(lines: list[str], target: str, module_path: str
             value = " ".join(parts[2:])
             if key not in ALLOWED_SET_KEYS:
                 raise ValueError(f"Metasploit option not allowed: {key}")
+            if key == "CMD":
+                validate_proof_command(value)
             if key in {"RHOST", "RHOSTS"}:
                 if value != target:
                     raise ValueError("Metasploit target option must match exact target.")
@@ -256,6 +265,66 @@ def validate_metasploit_resource(lines: list[str], target: str, module_path: str
         if "check" not in lines or "exit -y" not in lines:
             raise ValueError("Check plan must include check and exit -y.")
     return lines
+
+
+def plan_proof_command(
+    context: dict[str, Any],
+    *,
+    provider: str = "llama",
+    use_llm: bool = False,
+) -> dict[str, Any]:
+    fallback = fallback_proof_command()
+    if not use_llm:
+        return fallback
+    prompt = f"""
+You choose one harmless command-execution proof command for an authorized isolated lab.
+
+Context:
+{json.dumps(context, indent=2, default=str)[:4000]}
+
+Allowed commands:
+{json.dumps(ALLOWED_PROOF_COMMANDS, indent=2)}
+
+Return strict JSON only:
+{{
+  "command": "id",
+  "reason": "short reason"
+}}
+
+Rules:
+- Choose exactly one command from the allowed command keys.
+- Do not invent commands, arguments, shell metacharacters, file writes, downloads, persistence, or cleanup commands.
+- Prefer a command that gives observable identity/platform proof.
+"""
+    try:
+        raw = call_redteam_llm(prompt, settings=load_settings(), provider=provider)
+        parsed = parse_json(raw)
+        command = validate_proof_command(str(parsed.get("command") or ""))
+        return {
+            "command": command,
+            "reason": str(parsed.get("reason") or "LLM selected a validated proof command."),
+            "generated_by": "llm",
+            "llm_raw": raw[:1500],
+        }
+    except Exception as exc:
+        if not is_llm_api_error(exc) and not isinstance(exc, (LLMError, RuntimeError, ValueError, json.JSONDecodeError)):
+            raise
+        return {**fallback, "planner_error": f"{type(exc).__name__}: {exc}"}
+
+
+def fallback_proof_command() -> dict[str, Any]:
+    return {
+        "command": "id",
+        "reason": "Deterministic fallback command-execution proof.",
+        "generated_by": "fallback",
+    }
+
+
+def validate_proof_command(command: str) -> str:
+    normalized = re.sub(r"\s+", " ", command.strip())
+    if normalized not in ALLOWED_PROOF_COMMANDS:
+        raise ValueError(f"Proof command not allowed: {command}")
+    return normalized
 
 
 def execute_command(argv: list[str], *, timeout: int) -> tuple[subprocess.CompletedProcess[str], float]:

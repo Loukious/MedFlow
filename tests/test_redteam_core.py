@@ -11,15 +11,18 @@ from medflow_redteam.capabilities import capability_match_score, select_capabili
 from medflow_redteam.command_planner import (
     fallback_metasploit_resource,
     fallback_nmap_plan,
+    fallback_proof_command,
     fallback_recon_strategy,
     fallback_validation_strategy,
     validate_recon_strategy,
     validate_metasploit_resource,
     validate_nmap_argv,
+    validate_proof_command,
     validate_validation_strategy,
 )
 from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_generated_tool_code, validate_generated_tool_code
 from medflow_redteam.identity import analyze_identity_logs
+from medflow_redteam.metasploit_runner import first_interesting_line, has_command_output_proof, payload_attempts
 from medflow_redteam.tools import normalize_validation_status, route_technology_signals, web_control_checks
 
 
@@ -214,6 +217,42 @@ class RedTeamCoreTests(unittest.TestCase):
                 "exploit/unix/irc/unreal_ircd_3281_backdoor",
                 "check",
             )
+        with self.assertRaises(ValueError):
+            validate_metasploit_resource(
+                [
+                    "use exploit/linux/http/metabase_setup_token_rce",
+                    "set RHOSTS 172.29.10.10",
+                    "set CMD cat /etc/passwd",
+                    "run -j",
+                    "sessions -l",
+                    "sessions -K",
+                    "exit -y",
+                ],
+                "172.29.10.10",
+                "exploit/linux/http/metabase_setup_token_rce",
+                "exploit",
+            )
+
+    def test_rce_proof_commands_are_constrained_and_prioritized(self) -> None:
+        self.assertEqual(fallback_proof_command()["command"], "id")
+        self.assertEqual(validate_proof_command(" uname   -a "), "uname -a")
+        with self.assertRaises(ValueError):
+            validate_proof_command("cat /etc/passwd")
+
+        payloads = payload_attempts(
+            {
+                "selected_payload": "cmd/unix/reverse_bash",
+                "payload_candidates": [
+                    {"payload": "cmd/unix/reverse_bash"},
+                    {"payload": "cmd/unix/generic"},
+                ],
+            }
+        )
+        self.assertEqual(payloads[0], "cmd/unix/generic")
+
+        output = "random\nuid=1000(app) gid=1000(app) groups=1000(app)\n"
+        self.assertTrue(has_command_output_proof(output, "id"))
+        self.assertEqual(first_interesting_line(output, "id"), "uid=1000(app) gid=1000(app) groups=1000(app)")
 
     def test_llm_strategy_outputs_are_constrained(self) -> None:
         recon = validate_recon_strategy(

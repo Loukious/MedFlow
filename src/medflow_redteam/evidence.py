@@ -55,6 +55,38 @@ def normalize_web_evidence(web_checks: dict[str, Any] | None) -> list[dict[str, 
     return evidence
 
 
+def normalize_web_assessment_evidence(web_assessment: dict[str, Any] | None) -> list[dict[str, Any]]:
+    evidence = []
+    for finding in (web_assessment or {}).get("findings", []):
+        status = finding.get("status", "suspected")
+        evidence.append(
+            {
+                "type": "web_app_assessment",
+                "title": finding.get("type", "Web application finding"),
+                "asset": finding.get("url", ""),
+                "status": status,
+                "severity": finding.get("severity", "informational"),
+                "confidence": finding.get("confidence", "low"),
+                "proof_kind": "safe_probe",
+                "safe_summary": (finding.get("proof") or finding.get("evidence") or "")[:900],
+                "remediation": remediation_for_web_finding(finding),
+                "references": [item for item in [finding.get("cwe"), finding.get("owasp")] if item],
+            }
+        )
+    return evidence
+
+
+def remediation_for_web_finding(finding: dict[str, Any]) -> str:
+    finding_type = str(finding.get("type", "")).lower()
+    if "sqli" in finding_type:
+        return "Use parameterized queries, validate server-side inputs, and review database error handling."
+    if "xss" in finding_type:
+        return "Apply context-aware output encoding, input validation, and content security controls."
+    if "idor" in finding_type:
+        return "Enforce object-level authorization checks and test with separate user contexts."
+    return "Review the route and parameter evidence, then perform an authorized follow-up validation."
+
+
 def remediation_for_status(status: str) -> str:
     if status == "confirmed_vulnerability":
         return "Validate affected version/configuration, patch or disable the vulnerable component, and add detection coverage."

@@ -11,6 +11,7 @@ from .config import load_settings
 from .embeddings import embedding_device
 from .healthcare import ingest_healthcare_csv
 from .vector_store import build_from_mitre, client
+from medflow_redteam.web_kb import ingest_web_appsec_kb
 
 
 console = Console()
@@ -54,6 +55,15 @@ def cmd_ingest_healthcare(args: argparse.Namespace) -> None:
     console.print(counts or "No CSV files found.")
 
 
+def cmd_ingest_web_appsec(args: argparse.Namespace) -> None:
+    settings = load_settings()
+    counts = ingest_web_appsec_kb(settings.chroma_dir, settings.embedding_model, source_root=Path(args.source_root), limit=args.limit)
+    table = Table("Collection", "Documents")
+    for name, count in sorted(counts.items()):
+        table.add_row(name, str(count))
+    console.print(table if counts else "No web appsec documents found.")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="MedFlow AI threat intelligence and red-team RAG platform")
     sub = parser.add_subparsers(required=True)
@@ -76,6 +86,11 @@ def build_parser() -> argparse.ArgumentParser:
     ingest = sub.add_parser("ingest-healthcare-csv", help="Ingest optional healthcare CSV data into detection_db")
     ingest.add_argument("path")
     ingest.set_defaults(func=cmd_ingest_healthcare)
+
+    web = sub.add_parser("ingest-web-appsec", help="Ingest web appsec methodology and safe probe KB documents")
+    web.add_argument("--source-root", default=str(load_settings().root / "data" / "web_appsec_sources"))
+    web.add_argument("--limit", type=int, default=None)
+    web.set_defaults(func=cmd_ingest_web_appsec)
     return parser
 
 

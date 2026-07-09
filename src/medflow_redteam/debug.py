@@ -13,6 +13,7 @@ RAW_SECTIONS = [
     "web_fingerprint",
     "web_routes",
     "web_checks",
+    "web_assessment",
     "capability_selection",
     "capability_validation",
     "normalized_evidence",

@@ -124,6 +124,17 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
             )
         console.print(routes_table)
 
+    if run.web_assessment and run.web_assessment.get("findings"):
+        web_table = Table("Type", "Confidence", "Parameter", "Evidence")
+        for item in run.web_assessment.get("findings", [])[:12]:
+            web_table.add_row(
+                item.get("type", ""),
+                item.get("confidence", ""),
+                item.get("parameter", ""),
+                (item.get("evidence") or item.get("proof") or "")[:160],
+            )
+        console.print(web_table)
+
     if show_traces:
         traces = Table("Tool/Agent", "Input", "Output Preview")
         for trace in run.tool_traces:

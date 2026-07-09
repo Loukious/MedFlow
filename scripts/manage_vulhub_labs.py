@@ -123,15 +123,32 @@ def print_status(status: dict[str, list[dict[str, Any]]]) -> None:
             print(f"  {container.get('Names')} {container.get('State')} {container.get('Status')} ip={ips}")
 
 
+def target_ip_for_lab(lab: dict[str, Any], containers: list[dict[str, Any]]) -> str:
+    target_service = str(lab.get("target_service") or (lab.get("services") or [""])[0])
+    preferred = [
+        container for container in containers
+        if f"-{target_service}-" in str(container.get("Names", ""))
+        and str(container.get("State", "")).lower() == "running"
+        and container.get("IPs")
+    ]
+    fallback = [
+        container for container in containers
+        if str(container.get("State", "")).lower() == "running"
+        and container.get("IPs")
+    ]
+    selected = (preferred or fallback or [{}])[0]
+    ips = selected.get("IPs") or []
+    return str(ips[0]) if ips else ""
+
+
 def test_labs(labs: dict[str, dict[str, Any]], use_sudo: bool, no_llm: bool, max_capabilities: int) -> None:
     status = status_labs(labs, use_sudo=use_sudo)
     for name, containers in status.items():
-        ips = [ip for container in containers for ip in container.get("IPs", [])]
-        if not ips:
+        lab = labs[name]
+        target = target_ip_for_lab(lab, containers)
+        if not target:
             print(f"\n{name}: no running container IP found; skipping")
             continue
-        target = ips[0]
-        lab = labs[name]
         ports = ",".join(str(port) for port in lab.get("ports", []))
         command = [
             str(ROOT / ".venv" / "bin" / "python"),

@@ -20,7 +20,7 @@ from medflow_ti.llm import LLMError, is_llm_api_error
 from medflow_graph.memory import GraphStore
 
 from .command_planner import plan_recon_strategy, plan_validation_strategy
-from .evidence import normalize_validation_evidence, normalize_web_evidence, render_findings_table
+from .evidence import normalize_validation_evidence, normalize_web_assessment_evidence, normalize_web_evidence, render_findings_table
 from .tools import (
     ToolResult,
     default_ports_for_target,
@@ -36,6 +36,7 @@ from .tools import (
     web_fingerprint,
     web_route_discovery,
 )
+from .web_app import run_web_assessment
 
 
 @dataclass
@@ -70,6 +71,7 @@ class CampaignRun:
     recon_strategy: dict[str, Any] | None = None
     validation_strategy: dict[str, Any] | None = None
     web_checks: dict[str, Any] | None = None
+    web_assessment: dict[str, Any] | None = None
     normalized_evidence: list[dict[str, Any]] = field(default_factory=list)
     loop_summary: dict[str, Any] | None = None
     phases: list[dict[str, Any]] = field(default_factory=list)
@@ -102,6 +104,7 @@ class CampaignState(TypedDict, total=False):
     recon_strategy: dict[str, Any]
     validation_strategy: dict[str, Any]
     web_checks: dict[str, Any]
+    web_assessment: dict[str, Any]
     normalized_evidence: list[dict[str, Any]]
     loop_summary: dict[str, Any]
     phases: list[dict[str, Any]]
@@ -390,6 +393,7 @@ def compact_reporting_draft(state: CampaignState) -> dict[str, Any]:
         "web_artifact_signals": [item for item in routes if item.get("artifact_signal")][:12],
         "web_fingerprints": [item for item in fingerprints if item.get("status")][:8],
         "web_checks": truncate_value(state.get("web_checks", {}), 700),
+        "web_assessment": truncate_value(state.get("web_assessment", {}), 900),
         "graph_memory_hits": [
             {
                 "type": hit.get("type"),
@@ -504,6 +508,7 @@ and success criteria. Do not provide exploit instructions.
         web_routes = state.get("web_routes")
         fingerprints = state.get("web_fingerprint")
         web_checks = state.get("web_checks")
+        web_assessment = state.get("web_assessment")
         traces = state.get("tool_traces", [])
         steps = state.get("steps", [])
         if state.get("execute_recon") and state.get("target"):
@@ -530,17 +535,21 @@ and success criteria. Do not provide exploit instructions.
                 http = http_probe(target, ports=http_ports)
                 fingerprints = web_fingerprint(target, ports=http_ports)
                 web_routes = web_route_discovery(target, ports=http_ports)
+                web_assessment = run_web_assessment(target, http_ports, max_depth=1, max_routes=24)
                 http_status = observation_status(http, "http_probe")
                 fingerprint_status = observation_status(fingerprints, "web_fingerprints")
                 route_status = observation_status(web_routes, "web_routes")
+                web_assessment_status = "confirmed_exposure" if web_assessment.get("findings") else "ran_no_finding"
             else:
                 skip_reason = "No HTTP-like open services were observed; skipped web probing."
                 http = {"http_probe": [], "skipped": True, "reason": skip_reason}
                 fingerprints = {"web_fingerprints": [], "skipped": True, "reason": skip_reason}
                 web_routes = {"web_routes": [], "skipped": True, "reason": skip_reason}
+                web_assessment = {"routes": [], "findings": [], "skipped": True, "reason": skip_reason}
                 http_status = "not_applicable"
                 fingerprint_status = "not_applicable"
                 route_status = "not_applicable"
+                web_assessment_status = "not_applicable"
             web_checks = web_control_checks(web_routes, fingerprints)
             recon_step = "reconnaissance agent executed runtime TCP, service, and HTTP probes against the allowlisted target" if http_ports else "reconnaissance agent executed runtime TCP and service probes; skipped web probing because no HTTP-like services were observed"
             steps = [*steps, recon_step]
@@ -554,6 +563,7 @@ and success criteria. Do not provide exploit instructions.
                 {"tool": "web_fingerprint", "input": target, "status": fingerprint_status, "evidence": json.dumps(fingerprints, indent=2)[:1200]},
                 {"tool": "web_route_discovery", "input": target, "status": route_status, "evidence": json.dumps(web_routes, indent=2)[:1200]},
                 {"tool": "web_control_checks", "input": target, "status": findings_status(web_checks), "evidence": json.dumps(web_checks, indent=2)[:1200]},
+                {"tool": "web_app_assessment", "input": target, "status": web_assessment_status, "evidence": json.dumps({"routes": len(web_assessment.get("routes", [])), "findings": web_assessment.get("findings", []), "graph_summary": web_assessment.get("graph_summary", {})}, indent=2)[:1200]},
             ]
             traces = [
                 *traces,
@@ -564,6 +574,7 @@ and success criteria. Do not provide exploit instructions.
                 make_trace("web_fingerprint", target, json.dumps(fingerprints, indent=2)),
                 make_trace("web_route_discovery", target, json.dumps(web_routes, indent=2)),
                 make_trace("web_control_checks", target, json.dumps(web_checks, indent=2)),
+                make_trace("web_app_assessment", target, json.dumps(web_assessment, indent=2)),
             ]
             sources = retrieve_many(build_campaign_queries(state["goal"], services), settings=settings, n_results=n_results)
         else:
@@ -623,6 +634,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             "http": http or {},
             "web_fingerprint": fingerprints or {},
             "web_routes": web_routes or {},
+            "web_assessment": web_assessment or {},
             "tcp": tcp or {},
         }
         return {
@@ -632,6 +644,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             "web_fingerprint": fingerprints,
             "web_routes": web_routes,
             "web_checks": web_checks,
+            "web_assessment": web_assessment,
             "recon_strategy": recon_strategy if state.get("execute_recon") and state.get("target") else state.get("recon_strategy"),
             "graph_memory": graph_memory,
             "sources": sources,
@@ -1033,6 +1046,7 @@ def run_campaign(
         "recon_strategy": {},
         "validation_strategy": {},
         "web_checks": {},
+        "web_assessment": {},
         "normalized_evidence": [],
         "loop_summary": {},
     }
@@ -1049,6 +1063,7 @@ def run_campaign(
             )
         final_state["normalized_evidence"] = [
             *normalize_web_evidence(final_state.get("web_checks")),
+            *normalize_web_assessment_evidence(final_state.get("web_assessment")),
             *normalize_validation_evidence(final_state.get("capability_validation")),
         ]
         if final_state.get("normalized_evidence"):
@@ -1068,6 +1083,7 @@ def run_campaign(
             http=final_state.get("http"),
             web_fingerprint=final_state.get("web_fingerprint"),
             web_routes=final_state.get("web_routes"),
+            web_assessment=final_state.get("web_assessment"),
             capability_selection=final_state.get("capability_selection"),
             capability_validation=final_state.get("capability_validation"),
             graph_memory=final_state.get("graph_memory"),
@@ -1096,6 +1112,7 @@ def run_campaign(
             tool_timeline=[],
             graph_memory={},
             web_checks={},
+            web_assessment={},
             normalized_evidence=[],
             loop_summary={},
             elapsed_seconds=elapsed,
@@ -1300,6 +1317,9 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         "",
         "## Web Control Checks",
         json.dumps(payload.get("web_checks") or {"status": "not run"}, indent=2),
+        "",
+        "## Web Application Assessment",
+        json.dumps(payload.get("web_assessment") or {"status": "not run"}, indent=2),
         "",
         "## Steps",
         *[f"- {step}" for step in payload.get("steps", [])],

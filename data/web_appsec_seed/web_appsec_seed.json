@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "documents": [
+    {
+      "id": "web-methodology-sqli",
+      "collection": "web_methodology_db",
+      "source": "curated_seed",
+      "category": "sql_injection",
+      "title": "SQL injection testing method",
+      "cwe": ["CWE-89"],
+      "owasp": ["A03:2021-Injection"],
+      "text": "SQL injection testing starts by identifying parameters that influence database-backed responses. Safe validation should compare a baseline response with harmless syntax, boolean, and timing probes. Evidence includes database error messages, stable true/false response differences, or controlled timing deltas. Avoid destructive statements and data modification."
+    },
+    {
+      "id": "web-methodology-xss",
+      "collection": "web_methodology_db",
+      "source": "curated_seed",
+      "category": "xss",
+      "title": "Reflected XSS testing method",
+      "cwe": ["CWE-79"],
+      "owasp": ["A03:2021-Injection"],
+      "text": "Reflected XSS testing starts by locating parameters reflected in HTML, JavaScript, attributes, or URL contexts. Use unique inert markers before active payloads. Evidence includes exact marker reflection, context classification, and whether output encoding or sanitization is missing. Browser execution proof should be isolated to lab targets."
+    },
+    {
+      "id": "web-methodology-idor",
+      "collection": "web_methodology_db",
+      "source": "curated_seed",
+      "category": "idor",
+      "title": "IDOR and broken object authorization testing method",
+      "cwe": ["CWE-639", "CWE-862"],
+      "owasp": ["A01:2021-Broken Access Control"],
+      "text": "IDOR testing maps object identifiers in routes, query parameters, JSON bodies, and links. Strong validation requires at least two authorization contexts. A suspected issue exists when object references are predictable or enumerable; a confirmed issue exists when a lower-privileged or different user can access another user's object without authorization."
+    },
+    {
+      "id": "web-methodology-path-traversal",
+      "collection": "web_methodology_db",
+      "source": "curated_seed",
+      "category": "path_traversal",
+      "title": "Path traversal and file read testing method",
+      "cwe": ["CWE-22"],
+      "owasp": ["A01:2021-Broken Access Control"],
+      "text": "Path traversal testing focuses on file path parameters, download routes, static asset handlers, and archive/image processors. Safe proof should use read-only benign files in lab systems or application-specific known files. Evidence includes response body signatures, content type changes, and server-side file content returned through a web route."
+    },
+    {
+      "id": "web-methodology-ssti",
+      "collection": "web_methodology_db",
+      "source": "curated_seed",
+      "category": "ssti",
+      "title": "Server-side template injection testing method",
+      "cwe": ["CWE-94", "CWE-1336"],
+      "owasp": ["A03:2021-Injection"],
+      "text": "SSTI testing starts with arithmetic and harmless expression probes in reflected template-like parameters. Evidence includes evaluated arithmetic, template error messages, or engine-specific behavior. RCE proof should only use harmless allowlisted commands in isolated lab targets."
+    },
+    {
+      "id": "web-probe-sqli-error",
+      "collection": "web_payload_db",
+      "source": "curated_seed",
+      "category": "sql_injection",
+      "title": "SQLi syntax probe",
+      "probe_class": "sqli_error_probe",
+      "text": "Use a single quote or quote-parenthesis marker as a non-destructive SQL syntax probe. Compare status, content length, title, and database error signatures against baseline. Do not execute stacked queries or destructive SQL."
+    },
+    {
+      "id": "web-probe-xss-marker",
+      "collection": "web_payload_db",
+      "source": "curated_seed",
+      "category": "xss",
+      "title": "XSS reflection marker",
+      "probe_class": "xss_reflection_marker",
+      "text": "Use a unique inert marker such as MEDFLOW_XSS_MARKER in candidate parameters. Evidence is exact marker reflection and HTML context; active script execution is a later lab-only step."
+    },
+    {
+      "id": "web-probe-idor-object-id",
+      "collection": "web_payload_db",
+      "source": "curated_seed",
+      "category": "idor",
+      "title": "IDOR object reference probe",
+      "probe_class": "idor_object_reference_probe",
+      "text": "Identify numeric, UUID, slug, account, patient, order, file, and record identifiers. Test neighboring or alternate IDs only in authorized lab data, and confirm with two auth contexts before reporting a confirmed IDOR."
+    }
+  ]
+}

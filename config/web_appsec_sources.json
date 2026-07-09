@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "description": "Web application security knowledge sources for MedFlow web pentesting agents.",
+  "sources": [
+    {
+      "id": "owasp_wstg",
+      "name": "OWASP Web Security Testing Guide",
+      "type": "methodology",
+      "url": "https://github.com/OWASP/wstg",
+      "license_note": "OWASP project content; keep source attribution in metadata."
+    },
+    {
+      "id": "owasp_cheat_sheets",
+      "name": "OWASP Cheat Sheet Series",
+      "type": "defense-guidance",
+      "url": "https://github.com/OWASP/CheatSheetSeries",
+      "license_note": "OWASP project content; keep source attribution in metadata."
+    },
+    {
+      "id": "owasp_api_top_10",
+      "name": "OWASP API Security Top 10",
+      "type": "api-methodology",
+      "url": "https://owasp.org/API-Security/",
+      "license_note": "Use as methodology/source reference."
+    },
+    {
+      "id": "portswigger_web_security_academy",
+      "name": "PortSwigger Web Security Academy",
+      "type": "training-methodology",
+      "url": "https://portswigger.net/web-security",
+      "license_note": "Use fetched/public excerpts sparingly and preserve attribution."
+    },
+    {
+      "id": "mitre_cwe",
+      "name": "MITRE CWE",
+      "type": "weakness-taxonomy",
+      "url": "https://cwe.mitre.org/",
+      "license_note": "Use official CWE identifiers and names for mapping."
+    },
+    {
+      "id": "mitre_capec",
+      "name": "MITRE CAPEC",
+      "type": "attack-pattern-taxonomy",
+      "url": "https://capec.mitre.org/",
+      "license_note": "Use official CAPEC identifiers and names for mapping."
+    },
+    {
+      "id": "payloadsallthethings_curated",
+      "name": "PayloadsAllTheThings curated safe probe labels",
+      "type": "payload-taxonomy",
+      "url": "https://github.com/swisskyrepo/PayloadsAllTheThings",
+      "license_note": "Do not blindly execute raw payload lists; import only curated safe probe classes."
+    },
+    {
+      "id": "nuclei_templates_metadata",
+      "name": "Nuclei template metadata",
+      "type": "scanner-template-metadata",
+      "url": "https://github.com/projectdiscovery/nuclei-templates",
+      "license_note": "Use template metadata and severity/tags as capability context."
+    }
+  ]
+}

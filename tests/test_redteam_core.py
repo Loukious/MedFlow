@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from medflow_graph.memory import GraphStore
 from medflow_redteam.campaign import http_ports_from_services, observation_status
@@ -24,6 +25,8 @@ from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_g
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.metasploit_runner import first_interesting_line, has_command_output_proof, payload_attempts
 from medflow_redteam.tools import normalize_validation_status, route_technology_signals, web_control_checks
+from medflow_redteam.web_app import WebParam, WebRoute, classify_parameter, persist_web_observation_graph, run_safe_web_probes
+from medflow_redteam.web_kb import load_seed_documents
 
 
 class RedTeamCoreTests(unittest.TestCase):
@@ -108,6 +111,48 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertIn("metabase", signals)
         self.assertNotIn("spring", signals)
         self.assertNotIn("struts", signals)
+
+    def test_web_app_graph_and_safe_probes(self) -> None:
+        route = WebRoute(
+            url="http://172.29.10.10:8080/item?id=1&q=test",
+            status=200,
+            title="Search",
+            params=[
+                WebParam("id", "query", "1", classify_parameter("id", "1")),
+                WebParam("q", "query", "test", classify_parameter("q", "test")),
+            ],
+        )
+        self.assertIn("object_id", route.params[0].classifications)
+        self.assertIn("sql_like", route.params[0].classifications)
+        self.assertIn("reflected_input", route.params[1].classifications)
+
+        def fake_fetch(url: str) -> dict:
+            if "MEDFLOW_XSS_MARKER" in url:
+                return {"ok": True, "body": f"<html>{url}</html>"}
+            if "%27" in url or "'" in url:
+                return {"ok": True, "body": "SQL syntax error near quote MySQL"}
+            return {"ok": True, "body": "<html>baseline</html>"}
+
+        with patch("medflow_redteam.web_app.fetch_text", side_effect=fake_fetch):
+            findings = run_safe_web_probes([route])
+        finding_types = {finding.type for finding in findings}
+        self.assertIn("sqli_error_signal", finding_types)
+        self.assertIn("xss_reflection_signal", finding_types)
+        self.assertIn("idor_candidate", finding_types)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            graph = persist_web_observation_graph("172.29.10.10", [8080], [route], findings, Path(tmp) / "web_graph.json")
+            summary = graph.summary()
+            self.assertGreaterEqual(summary.get("nodes_route", 0), 1)
+            self.assertGreaterEqual(summary.get("nodes_parameter", 0), 2)
+            self.assertGreaterEqual(summary.get("nodes_finding", 0), 3)
+
+    def test_web_appsec_seed_documents_load(self) -> None:
+        docs = load_seed_documents()
+        collections = {doc.collection for doc in docs}
+        self.assertIn("web_methodology_db", collections)
+        self.assertIn("web_payload_db", collections)
+        self.assertTrue(any("SQL injection" in doc.text for doc in docs))
 
     def test_generated_tool_specs_from_dynamic_cache_are_valid(self) -> None:
         specs = load_generated_tool_specs()

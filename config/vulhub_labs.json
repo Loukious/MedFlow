@@ -119,6 +119,46 @@
       "services": ["activemq"],
       "ports": [61616, 8161],
       "goal": "Assess an authorized Vulhub Apache ActiveMQ lab target and identify viable validation paths"
+    },
+    "thinkphp_in_sqli": {
+      "path": "vulhub/thinkphp/in-sqlinjection",
+      "project": "medflow_vulhub_thinkphp_in_sqli",
+      "services": ["web", "mysql"],
+      "target_service": "web",
+      "ports": [80],
+      "goal": "Assess an authorized Vulhub ThinkPHP SQL injection lab target and validate safe web attack paths"
+    },
+    "magento_2_2_sqli": {
+      "path": "vulhub/magento/2.2-sqli",
+      "project": "medflow_vulhub_magento_2_2_sqli",
+      "services": ["web", "mysql"],
+      "target_service": "web",
+      "ports": [80],
+      "goal": "Assess an authorized Vulhub Magento SQL injection lab target and validate safe web attack paths"
+    },
+    "joomla_cve_2017_8917": {
+      "path": "vulhub/joomla/CVE-2017-8917",
+      "project": "medflow_vulhub_joomla_cve_2017_8917",
+      "services": ["web", "mysql"],
+      "target_service": "web",
+      "ports": [80],
+      "goal": "Assess an authorized Vulhub Joomla SQL injection lab target and validate safe web attack paths"
+    },
+    "php_inclusion": {
+      "path": "vulhub/php/inclusion",
+      "project": "medflow_vulhub_php_inclusion",
+      "services": ["php"],
+      "target_service": "php",
+      "ports": [80],
+      "goal": "Assess an authorized Vulhub PHP file inclusion lab target and validate safe web attack paths"
+    },
+    "grafana_cve_2021_43798": {
+      "path": "vulhub/grafana/CVE-2021-43798",
+      "project": "medflow_vulhub_grafana_cve_2021_43798",
+      "services": ["web"],
+      "target_service": "web",
+      "ports": [3000],
+      "goal": "Assess an authorized Vulhub Grafana path traversal lab target and validate safe web attack paths"
     }
   }
 }

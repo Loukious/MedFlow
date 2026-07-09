@@ -37,9 +37,11 @@ ALLOWED_SET_KEYS = {
     "RPORT",
     "SRVHOST",
     "SRVPORT",
+    "SSL",
     "TARGET",
     "TARGETURI",
     "URI",
+    "VHOST",
 }
 
 

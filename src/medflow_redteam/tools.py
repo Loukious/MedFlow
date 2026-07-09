@@ -193,6 +193,7 @@ def technology_signals(text: str) -> list[str]:
         "functionrouter": "functionrouter",
         "gunicorn": "gunicorn",
         "jquery": "jquery",
+        "metabase": "metabase",
         "openwire": "openwire",
         "php": "php",
         "rocketmq": "rocketmq",
@@ -208,9 +209,9 @@ def route_technology_signals(url: str, title: str, body: str, status: int | None
     text = " ".join([title, body[:2000]]).lower()
     signals = set(technology_signals(text))
     lowered_url = url.lower()
-    if "struts" in text or re.search(r"\bs2-\d{3}\b", text) or (status in {200, 500} and ".action" in lowered_url):
+    if "struts" in text or "ognl" in text or re.search(r"\bs2-\d{3}\b", text) or (status == 500 and ".action" in lowered_url):
         signals.update({"struts", "ognl"})
-    if "whitelabel error page" in text or (status in {200, 500} and "functionrouter" in lowered_url):
+    if "whitelabel error page" in text or "spring cloud function" in text or (status == 500 and "functionrouter" in lowered_url):
         signals.update({"spring", "spring cloud", "functionrouter"})
     return sorted(signals)
 

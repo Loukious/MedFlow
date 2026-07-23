@@ -204,7 +204,7 @@ def main() -> None:
         help="Metasploit action for selected modules. exploit requires --execution-mode aggressive_lab.",
     )
     parser.add_argument("--no-llm", action="store_true", help="Use deterministic role handoffs for a fast offline demo.")
-    parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
+    parser.add_argument("--provider", choices=["gpt_oss", "llama", "qwen"], default="gpt_oss")
     parser.add_argument("--results", type=int, default=5, help="Retrieved context results per query.")
     parser.add_argument("--graph-memory", default="data/graph/medflow_graph.json", help="Optional graph-memory JSON path.")
     parser.add_argument("--update-graph", action="store_true", help="Ingest the saved campaign JSON into graph memory after the run.")

@@ -37,7 +37,7 @@ def run_metasploit_module(
     execution_mode: str,
     action: str = "check",
     timeout: int = 180,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
     plan = plan_metasploit_execution(
@@ -193,7 +193,7 @@ def run_msfconsole_action(
     *,
     timeout: int,
     target: str,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> tuple[subprocess.CompletedProcess[str], str, str, float, list[str]]:
     resource_plan = plan_metasploit_resource(

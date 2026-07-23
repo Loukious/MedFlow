@@ -23,6 +23,8 @@ from .shared_tools import (
 
 
 def _model_for_provider(settings: Settings, provider: str) -> tuple[str, dict[str, Any]]:
+    if provider in {"gpt_oss", "gpt-oss"}:
+        return settings.gpt_oss_model, {"reasoning_effort": "medium"}
     if provider == "qwen":
         return settings.qwen_model, {}
     return settings.llama_model, {}
@@ -38,7 +40,7 @@ async def _run_agent(agent: FunctionAgent, prompt: str):
 
 def run_llamaindex_redteam(
     scenario_path: str | None = None,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     n_results: int = 5,
     settings: Settings | None = None,
     verbose: bool = False,

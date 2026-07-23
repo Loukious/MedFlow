@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-Provider = Literal["llama", "qwen"]
+Provider = Literal["gpt_oss", "llama", "qwen"]
 ExecutionMode = Literal["safe", "aggressive_lab"]
 MetasploitAction = Literal["plan", "check", "exploit"]
 
@@ -29,7 +29,7 @@ class CampaignRequest(BaseModel):
     execution_mode: ExecutionMode = "safe"
     metasploit_action: MetasploitAction = "check"
     use_llm: bool = False
-    provider: Provider = "llama"
+    provider: Provider = "gpt_oss"
     results: int = Field(default=5, ge=1, le=30)
     graph_memory: str = "data/graph/medflow_graph.json"
     update_graph: bool = False
@@ -62,7 +62,7 @@ class ToolsmithCreateRequest(BaseModel):
     service: str = ""
     port: int = 0
     prompt: str = ""
-    provider: Provider = "llama"
+    provider: Provider = "gpt_oss"
     graph: str = "data/graph/medflow_graph.json"
     overwrite: bool = False
 

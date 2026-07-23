@@ -216,7 +216,7 @@ Write a red-team lab report with:
 """
 
 
-def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_results: int = 5):
+def build_redteam_lab_graph(settings: Settings, provider: str = "gpt_oss", n_results: int = 5):
     def recon_connectivity(state: LabState) -> LabState:
         tcp = tcp_connect_check(state["target"], ports=state["ports"])
         return {
@@ -309,7 +309,7 @@ def build_redteam_lab_graph(settings: Settings, provider: str = "llama", n_resul
             state.get("exploit_selection", {}),
             use_sudo=state.get("use_sudo", False),
             execution_mode=state.get("execution_mode", "safe"),
-            provider=state.get("provider", "llama"),
+            provider=state.get("provider", "gpt_oss"),
             use_llm=True,
         )
         return {
@@ -437,7 +437,7 @@ def build_fallback_report(state: LabState, error: str) -> str:
 def run_redteam_lab(
     target: str = DEFAULT_TARGET,
     ports: list[int] | None = None,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_sudo: bool = False,
     run_exploit_validation: bool = False,
     max_exploit_candidates: int = 1,

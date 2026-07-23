@@ -81,7 +81,7 @@ def service_scan(target: str, ports: list[int] | None = None, profile: str | Non
     target = validate_target(target)
     selected_ports = ports or default_ports_for_target(target)
     use_llm = (profile or "").startswith("llm:")
-    provider = (profile or "llm:llama").split(":", 1)[1] if use_llm else "llama"
+    provider = (profile or "llm:gpt_oss").split(":", 1)[1] if use_llm else "gpt_oss"
     plan = plan_nmap_command(target, selected_ports, provider=provider, use_llm=use_llm)
     command = plan["argv"]
     proc, elapsed = execute_command(command, timeout=120)
@@ -357,7 +357,7 @@ def run_selected_exploit(
     use_sudo: bool = False,
     execution_mode: str = "safe",
     metasploit_action: str = "check",
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict:
     selected_candidates = selection.get("selected_candidates") or ([selection.get("selected")] if selection and selection.get("selected") else [])
@@ -408,7 +408,7 @@ def run_one_selected_capability(
     use_sudo: bool = False,
     execution_mode: str = "safe",
     metasploit_action: str = "check",
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict:
     exploit_id = selected.get("id")

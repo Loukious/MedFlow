@@ -115,7 +115,7 @@ gpu: NVIDIA GeForce RTX 3050 Laptop GPU
 
 ## 4. LLM Provider Integration
 
-Groq-hosted Llama 3.1 8B and Qwen 3 32B are used only for the agent answer generation layer.
+Groq-hosted GPT-OSS 120B, Llama 3.1 8B, and Qwen 3 32B are used only for the agent answer generation layer. GPT-OSS 120B is the default.
 
 Code:
 
@@ -143,8 +143,10 @@ How it works:
 - The system retrieves relevant documents from Chroma first.
 - Retrieved evidence is inserted into a prompt.
 - The selected model writes the final answer using only that retrieved context.
+- GPT-OSS defaults to GPT-OSS 120B using model ID `openai/gpt-oss-120b`, medium reasoning effort, and hidden reasoning output.
 - Llama defaults to Llama 3.1 8B using model ID `llama-3.1-8b-instant`.
 - Qwen defaults to Qwen 3 32B using model ID `qwen/qwen3-32b`.
+- Model IDs can be overridden with `GPT_OSS_MODEL`, `LLAMA_MODEL`, and `QWEN_MODEL`.
 - Qwen uses a smaller context budget to stay friendlier to free-tier token limits.
 - If the selected LLM is quota-limited or unavailable, the app returns retrieved MITRE evidence instead of crashing.
 

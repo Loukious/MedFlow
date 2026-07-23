@@ -36,7 +36,7 @@ def _append_step(state: RedTeamGraphState, step: str) -> list[str]:
     return [*state.get("steps", []), step]
 
 
-def build_langgraph_app(settings: Settings, provider: str = "llama", n_results: int = 5):
+def build_langgraph_app(settings: Settings, provider: str = "gpt_oss", n_results: int = 5):
     def prepare_queries(state: RedTeamGraphState) -> RedTeamGraphState:
         scenario = state["scenario"]
         queries = build_redteam_queries(scenario)
@@ -114,7 +114,7 @@ def build_langgraph_app(settings: Settings, provider: str = "llama", n_results: 
 
 def run_langgraph_redteam(
     scenario_path: str | None = None,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     n_results: int = 5,
     settings: Settings | None = None,
 ) -> ComparisonRun:

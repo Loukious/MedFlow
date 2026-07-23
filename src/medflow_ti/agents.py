@@ -64,7 +64,7 @@ def format_context(hits: list[dict], max_doc_chars: int = 1400, max_total_chars:
     return context
 
 
-def answer_question(settings: Settings, agent: str, question: str, n_results: int = 8, provider: str = "llama") -> AgentAnswer:
+def answer_question(settings: Settings, agent: str, question: str, n_results: int = 8, provider: str = "gpt_oss") -> AgentAnswer:
     agent = AGENT_ALIASES.get(agent, agent)
     if agent not in AGENTS:
         raise ValueError(f"Unknown agent '{agent}'. Choose one of: {', '.join(AGENTS)}")
@@ -95,6 +95,7 @@ Answer with concise sections:
     llm = make_llm(
         provider=provider,
         groq_api_key=settings.groq_api_key,
+        gpt_oss_model=settings.gpt_oss_model,
         llama_model=settings.llama_model,
         qwen_model=settings.qwen_model,
     )
@@ -108,7 +109,13 @@ Answer with concise sections:
 
 
 def provider_label(provider: str) -> str:
-    return {"llama": "Llama 3.1 8B", "qwen": "Qwen 3 32B", "groq": "Qwen 3 32B"}.get(provider, provider)
+    return {
+        "gpt_oss": "GPT-OSS 120B",
+        "gpt-oss": "GPT-OSS 120B",
+        "llama": "Llama 3.1 8B",
+        "qwen": "Qwen 3 32B",
+        "groq": "Qwen 3 32B",
+    }.get(provider, provider)
 
 
 def context_budget(provider: str) -> tuple[int, int]:

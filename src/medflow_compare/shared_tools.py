@@ -173,10 +173,11 @@ def safety_review_tool(content: str) -> str:
     )
 
 
-def call_redteam_llm(prompt: str, settings: Settings, provider: str = "llama") -> str:
+def call_redteam_llm(prompt: str, settings: Settings, provider: str = "gpt_oss") -> str:
     llm = make_llm(
         provider=provider,
         groq_api_key=settings.groq_api_key,
+        gpt_oss_model=settings.gpt_oss_model,
         llama_model=settings.llama_model,
         qwen_model=settings.qwen_model,
         max_completion_tokens=1200,

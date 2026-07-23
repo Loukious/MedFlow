@@ -36,7 +36,7 @@ class ToolsmithAgent:
         *,
         graph_path: Path | str = DEFAULT_GRAPH_PATH,
         settings: Settings | None = None,
-        provider: str = "llama",
+        provider: str = "gpt_oss",
     ) -> None:
         self.graph_path = Path(graph_path)
         self.settings = settings or load_settings()

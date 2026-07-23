@@ -16,12 +16,14 @@ class GroqLLM:
         api_key: str | None,
         model: str,
         hide_reasoning: bool = False,
+        reasoning_effort: str | None = None,
         max_completion_tokens: int = 2048,
     ) -> None:
         if not api_key:
             raise RuntimeError("Missing Groq API key. Set GroqAPIKey or GROQ_API_KEY in .env.")
         self.model = model
         self.hide_reasoning = hide_reasoning
+        self.reasoning_effort = reasoning_effort
         self.max_completion_tokens = max_completion_tokens
         self.client = Groq(api_key=api_key)
 
@@ -40,6 +42,8 @@ class GroqLLM:
         }
         if self.hide_reasoning:
             request["reasoning_format"] = "hidden"
+        if self.reasoning_effort:
+            request["reasoning_effort"] = self.reasoning_effort
         response = self.client.chat.completions.create(**request)
         return strip_thinking(response.choices[0].message.content or "")
 
@@ -53,8 +57,17 @@ def make_llm(
     groq_api_key: str | None,
     llama_model: str,
     qwen_model: str,
+    gpt_oss_model: str = "openai/gpt-oss-120b",
     max_completion_tokens: int = 2048,
 ):
+    if provider in {"gpt_oss", "gpt-oss"}:
+        return GroqLLM(
+            groq_api_key,
+            gpt_oss_model,
+            hide_reasoning=True,
+            reasoning_effort="medium",
+            max_completion_tokens=max_completion_tokens,
+        )
     if provider == "llama":
         return GroqLLM(groq_api_key, llama_model, max_completion_tokens=max_completion_tokens)
     if provider in {"qwen", "groq"}:
@@ -64,7 +77,7 @@ def make_llm(
             hide_reasoning=True,
             max_completion_tokens=max_completion_tokens,
         )
-    raise ValueError(f"Unknown LLM provider '{provider}'. Choose llama or qwen.")
+    raise ValueError(f"Unknown LLM provider '{provider}'. Choose gpt_oss, llama, or qwen.")
 
 
 def is_llm_api_error(exc: Exception) -> bool:

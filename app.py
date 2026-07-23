@@ -37,8 +37,13 @@ with st.sidebar:
     if mode == "Ask Agent":
         selected_label = st.selectbox("Agent", [agent_labels[name] for name in sorted(AGENTS)])
         agent = {label: name for name, label in agent_labels.items()}[selected_label]
-        provider_label = st.selectbox("LLM Provider", ["Llama 3.1 8B", "Qwen 3 32B"])
-        provider = "qwen" if provider_label.startswith("Qwen") else "llama"
+        provider_options = {
+            "GPT-OSS 120B": "gpt_oss",
+            "Llama 3.1 8B": "llama",
+            "Qwen 3 32B": "qwen",
+        }
+        provider_label = st.selectbox("LLM Provider", list(provider_options))
+        provider = provider_options[provider_label]
     elif mode == "Search Knowledge Base":
         selected_group = st.selectbox("Knowledge Base", list(COLLECTION_GROUPS))
         show_full_text = st.checkbox("Show full result text", value=False)

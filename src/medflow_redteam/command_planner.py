@@ -56,7 +56,7 @@ def plan_nmap_command(
     target: str,
     ports: list[int],
     *,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
     fallback = fallback_nmap_plan(target, ports)
@@ -142,7 +142,7 @@ def plan_metasploit_resource(
     selected_payload: str,
     action: str,
     *,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
     fallback = fallback_metasploit_resource(target, module_path, options, selected_payload, action)
@@ -270,7 +270,7 @@ def validate_metasploit_resource(lines: list[str], target: str, module_path: str
 def plan_proof_command(
     context: dict[str, Any],
     *,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
     fallback = fallback_proof_command()
@@ -351,7 +351,7 @@ def plan_recon_strategy(
     tcp: dict[str, Any],
     requested_ports: list[int],
     *,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
     open_ports = [int(port) for port, result in tcp.items() if isinstance(result, dict) and result.get("open") and str(port).isdigit()]
@@ -440,7 +440,7 @@ def plan_validation_strategy(
     selection: dict[str, Any],
     *,
     max_capabilities: int,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
     candidates = selection.get("candidates") or selection.get("selected_candidates") or []

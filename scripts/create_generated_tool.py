@@ -17,7 +17,7 @@ def main() -> None:
     parser.add_argument("--service", default="")
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--prompt", default="", help="LLM generation prompt for a generated tool.")
-    parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
+    parser.add_argument("--provider", choices=["gpt_oss", "llama", "qwen"], default="gpt_oss")
     parser.add_argument("--graph", type=Path, default=Path("data/graph/medflow_graph.json"))
     args = parser.parse_args()
 

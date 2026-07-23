@@ -56,7 +56,7 @@ Important campaign flags:
 - `execution_mode`: `safe` or `aggressive_lab`.
 - `metasploit_action`: `plan`, `check`, or `exploit`.
 - `use_llm`: enables LLM planning.
-- `provider`: `llama` or `qwen`.
+- `provider`: `gpt_oss` (default), `llama`, or `qwen`.
 - `loop`: enables iterative campaign rounds.
 - `update_graph`: ingests the finished campaign report into graph memory.
 

@@ -149,7 +149,7 @@ def run_web_assessment(
     graph_path: Path = GRAPH_PATH,
     use_kb: bool = True,
     auth_contexts: list[WebAuthContext] | None = None,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
     started = time.monotonic()
@@ -279,7 +279,7 @@ def fetch_route(url: str, auth_context: WebAuthContext | None = None) -> WebRout
 def run_safe_web_probes(
     routes: list[WebRoute],
     *,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     use_llm: bool = False,
     probe_results: list[dict[str, Any]] | None = None,
 ) -> list[WebFinding]:

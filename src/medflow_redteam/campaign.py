@@ -297,7 +297,7 @@ Use arrays for tools, decisions, and outputs.
 Keep it safe: validation, telemetry, detection, and reporting level only.
 """
     try:
-        raw = call_redteam_llm(prompt, settings=settings, provider=state.get("provider", "llama"))
+        raw = call_redteam_llm(prompt, settings=settings, provider=state.get("provider", "gpt_oss"))
         parsed = parse_json_object(raw)
         return {
             "role": scalarize(parsed.get("role"), role),
@@ -461,7 +461,7 @@ def apply_validation_strategy(selection: dict[str, Any], strategy: dict[str, Any
 
 def build_campaign_graph(
     settings: Settings,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     n_results: int = 5,
     graph_memory_path: Path | None = None,
 ):
@@ -531,11 +531,11 @@ and success criteria. Do not provide exploit instructions.
                 target,
                 tcp,
                 ports,
-                provider=state.get("provider", "llama"),
+                provider=state.get("provider", "gpt_oss"),
                 use_llm=state.get("use_llm", False),
             )
             service_scan_ports = recon_strategy.get("service_scan_ports") or open_ports or ports
-            scan_profile = f"llm:{state.get('provider', 'llama')}" if state.get("use_llm") else None
+            scan_profile = f"llm:{state.get('provider', 'gpt_oss')}" if state.get("use_llm") else None
             nmap_result = service_scan(target, ports=service_scan_ports, profile=scan_profile)
             services = parse_open_services(nmap_result.stdout)
             if not services and open_ports:
@@ -555,7 +555,7 @@ and success criteria. Do not provide exploit instructions.
                     max_depth=2,
                     max_routes=80,
                     auth_contexts=state.get("web_auth_contexts", []),
-                    provider=state.get("provider", "llama"),
+                    provider=state.get("provider", "gpt_oss"),
                     use_llm=state.get("use_llm", False),
                 )
                 http_status = observation_status(http, "http_probe")
@@ -710,7 +710,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             state.get("services", []),
             selection,
             max_capabilities=state.get("max_capabilities", 5),
-            provider=state.get("provider", "llama"),
+            provider=state.get("provider", "gpt_oss"),
             use_llm=state.get("use_llm", False),
         )
         selection = apply_validation_strategy(selection, validation_strategy)
@@ -719,7 +719,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             selection,
             execution_mode=state.get("execution_mode", "safe"),
             metasploit_action=state.get("metasploit_action", "check"),
-            provider=state.get("provider", "llama"),
+            provider=state.get("provider", "gpt_oss"),
             use_llm=state.get("use_llm", False),
         )
         output = agent_to_dict(
@@ -917,7 +917,7 @@ Write the final campaign brief with:
         try:
             if not state.get("use_llm", True):
                 raise RuntimeError("LLM disabled for deterministic campaign run.")
-            report = call_redteam_llm(prompt, settings=settings, provider=state.get("provider", "llama"))
+            report = call_redteam_llm(prompt, settings=settings, provider=state.get("provider", "gpt_oss"))
         except Exception as exc:
             if not is_llm_api_error(exc) and not isinstance(exc, (LLMError, RuntimeError)):
                 raise
@@ -1031,7 +1031,7 @@ def run_campaign(
     goal: str,
     target: str | None = None,
     ports: list[int] | None = None,
-    provider: str = "llama",
+    provider: str = "gpt_oss",
     execute_recon: bool = False,
     execute_validation: bool = False,
     max_capabilities: int = 5,
@@ -1204,7 +1204,7 @@ def run_validation_loop(
             state.get("services", []),
             {**selection, "candidates": selected},
             max_capabilities=max(1, min(state.get("max_capabilities", 5), max_tools - total_tools)),
-            provider=state.get("provider", "llama"),
+            provider=state.get("provider", "gpt_oss"),
             use_llm=state.get("use_llm", False),
         )
         selection = apply_validation_strategy({**selection, "candidates": selected}, validation_strategy)
@@ -1216,7 +1216,7 @@ def run_validation_loop(
             selection,
             execution_mode=state.get("execution_mode", "safe"),
             metasploit_action=state.get("metasploit_action", "check"),
-            provider=state.get("provider", "llama"),
+            provider=state.get("provider", "gpt_oss"),
             use_llm=state.get("use_llm", False),
         )
         for item in validation.get("results", []):

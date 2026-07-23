@@ -204,7 +204,7 @@ def main() -> None:
     parser.add_argument("--labs", nargs="*", default=["all"], help="Manifest lab names to run, or all.")
     parser.add_argument("--max-labs", type=int, default=0, help="Limit number of labs after filtering.")
     parser.add_argument("--max-capabilities", type=int, default=6)
-    parser.add_argument("--provider", choices=["llama", "qwen"], default="llama")
+    parser.add_argument("--provider", choices=["gpt_oss", "llama", "qwen"], default="gpt_oss")
     parser.add_argument("--llm", action="store_true", help="Use configured LLM for narrative report generation.")
     parser.add_argument("--loop", action="store_true", help="Keep trying additional selected capabilities after initial validation.")
     parser.add_argument("--max-rounds", type=int, default=3)

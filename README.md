@@ -12,7 +12,8 @@ For the Milestone 2 red-team framework comparison, see `REDTEAM_FRAMEWORK_COMPAR
 - `redteam_db`: technique procedures, tool mappings, and relationship examples.
 - `actor_db`: intrusion sets, malware, tools, campaigns, and their mapped TTPs.
 - `detection_db`: MITRE analytics, detection strategies, data sources, mitigations, and healthcare notes.
-- Groq-hosted Llama 3.1 8B and Qwen 3 32B clients using the `.env` key `GroqAPIKey`.
+- Groq-hosted GPT-OSS 120B, Llama 3.1 8B, and Qwen 3 32B clients using the `.env` key `GROQ_API_KEY` (or `GroqAPIKey`).
+- GPT-OSS 120B is the default model. Override it with `GPT_OSS_MODEL` when needed.
 - Optional Kaggle healthcare cybersecurity dataset download and ingestion.
 - CLI and Streamlit UI.
 
@@ -60,6 +61,7 @@ python -m medflow_ti.cli ask threat_intel "What is T1053.005 and which tactics d
 python -m medflow_ti.cli ask threat_intel "Which actors are associated with hospital ransomware behavior?"
 python -m medflow_ti.cli ask threat_intel "What SIEM logic helps detect MFA fatigue against hospital portals?"
 python -m medflow_ti.cli ask threat_intel "What is T9999?"
+python -m medflow_ti.cli ask threat_intel "What is T9999?" --provider gpt_oss
 python -m medflow_ti.cli ask threat_intel "What is T9999?" --provider qwen
 ```
 

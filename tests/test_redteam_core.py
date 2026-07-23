@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from medflow_api.schemas import CampaignRequest, ToolsmithCreateRequest
 from medflow_graph.memory import GraphStore
 from medflow_redteam.campaign import http_ports_from_scan, http_ports_from_services, observation_status
 from medflow_redteam.capabilities import capability_match_score, select_capabilities_for_services
@@ -42,9 +43,24 @@ from medflow_redteam.web_app import (
     run_safe_web_probes,
 )
 from medflow_redteam.web_kb import load_seed_documents
+from medflow_ti.llm import make_llm
 
 
 class RedTeamCoreTests(unittest.TestCase):
+    def test_gpt_oss_is_supported_and_is_the_api_default(self) -> None:
+        llm = make_llm(
+            "gpt_oss",
+            "test-key",
+            "llama-3.1-8b-instant",
+            "qwen/qwen3-32b",
+            "openai/gpt-oss-120b",
+        )
+        self.assertEqual(llm.model, "openai/gpt-oss-120b")
+        self.assertEqual(llm.reasoning_effort, "medium")
+        self.assertTrue(llm.hide_reasoning)
+        self.assertEqual(CampaignRequest(goal="authorized lab test").provider, "gpt_oss")
+        self.assertEqual(ToolsmithCreateRequest(id="observer").provider, "gpt_oss")
+
     def test_validation_statuses_are_explicit(self) -> None:
         self.assertEqual(
             normalize_validation_status({"allowed": False, "verified": False}),

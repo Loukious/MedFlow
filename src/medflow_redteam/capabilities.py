@@ -166,6 +166,10 @@ def capability_match_score(
 ) -> tuple[int, list[str]]:
     if has_blocked_provider_indicator(capability):
         return 0, []
+    if capability.get("runner") == "generated_python_tool":
+        quality_state = str(capability.get("quality_state") or "candidate")
+        if quality_state not in {"shadow", "trusted"}:
+            return 0, []
 
     match = capability.get("match", {})
     observed_port = normalize_text(service.get("port"))
@@ -220,8 +224,11 @@ def capability_match_score(
             reasons.append(f"CVE {cve} matched observed target intelligence")
 
     if capability.get("runner") == "generated_python_tool":
-        score += 50
-        reasons.append("on-demand generated Python tool")
+        quality_state = str(capability.get("quality_state") or "candidate")
+        quality_score = float(capability.get("quality_score") or 0.0)
+        state_bonus = {"trusted": 35, "shadow": 10}.get(quality_state, 0)
+        score += state_bonus + round(quality_score * 20)
+        reasons.append(f"generated tool quality={quality_state} score={quality_score:.3f}")
     elif capability.get("safe_to_execute"):
         score += 5
         reasons.append("provider marked safe to execute")

@@ -11,6 +11,7 @@ from medflow_redteam.campaign import run_campaign, save_campaign_run
 from medflow_redteam.config_loader import ROOT
 from medflow_redteam.debug import build_campaign_debug, load_campaign_payload
 from medflow_redteam.toolsmith import ToolsmithAgent
+from medflow_redteam.tool_quality import list_quality_entries, record_quality_outcome, set_quality_state
 from medflow_redteam.web_app import WebAuthContext
 
 from .jobs import JobManager, job_to_dict
@@ -18,6 +19,8 @@ from .schemas import (
     ApiResponse,
     CampaignRequest,
     GraphSearchRequest,
+    ToolQualityOutcomeRequest,
+    ToolQualityStateRequest,
     ToolsmithCreateRequest,
     ToolsmithLookupRequest,
 )
@@ -121,10 +124,62 @@ def toolsmith_create(request: ToolsmithCreateRequest) -> ApiResponse:
         data={
             "action": result.action,
             "tool_id": (result.spec or {}).get("id"),
+            "artifact_hash": (result.spec or {}).get("artifact_hash"),
+            "quality_state": (result.spec or {}).get("quality_state"),
+            "quality_score": (result.spec or {}).get("quality_score"),
             "paths": {key: str(value) for key, value in (result.paths or {}).items()},
             "graph_node_id": result.graph_node_id,
         }
     )
+
+
+@app.get("/toolsmith/cache", response_model=ApiResponse)
+def tool_cache_list(state: str | None = None) -> ApiResponse:
+    entries = list_quality_entries()
+    if state:
+        entries = [entry for entry in entries if entry.get("state") == state]
+    return ApiResponse(data=entries)
+
+
+@app.get("/toolsmith/cache/{reference}", response_model=ApiResponse)
+def tool_cache_inspect(reference: str) -> ApiResponse:
+    entries = [
+        entry
+        for entry in list_quality_entries()
+        if entry.get("tool_id") == reference
+        or entry.get("artifact_hash") == reference
+        or str(entry.get("artifact_hash") or "").startswith(reference)
+    ]
+    if not entries:
+        raise HTTPException(status_code=404, detail="Cached tool artifact not found.")
+    return ApiResponse(data=entries)
+
+
+@app.post("/toolsmith/cache/{reference}/state", response_model=ApiResponse)
+def tool_cache_set_state(reference: str, request: ToolQualityStateRequest) -> ApiResponse:
+    try:
+        result = set_quality_state(reference, request.state, reason=request.reason, force=request.force)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ApiResponse(data=result)
+
+
+@app.post("/toolsmith/cache/{reference}/outcomes", response_model=ApiResponse)
+def tool_cache_record_outcome(reference: str, request: ToolQualityOutcomeRequest) -> ApiResponse:
+    try:
+        result = record_quality_outcome(
+            reference,
+            request.outcome,
+            reason=request.reason,
+            evidence_id=request.evidence_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return ApiResponse(data=result)
 
 
 def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:

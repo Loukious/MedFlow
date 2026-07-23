@@ -3,13 +3,26 @@ from __future__ import annotations
 import ast
 import importlib.util
 import json
+import multiprocessing
+import os
+import signal
 import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from queue import Empty
 from typing import Any
 
 from .config_loader import ROOT, load_lab_config
+from .tool_quality import (
+    EXECUTABLE_STATES,
+    FINDING_STATES,
+    artifact_hash,
+    quality_for_spec,
+    record_quality_outcome,
+    register_artifact,
+    registry_write_lock,
+)
 
 
 CONFIG_TOOL_DIR = ROOT / "config" / "generated_tools"
@@ -45,15 +58,28 @@ def load_generated_tool_specs() -> list[dict[str, Any]]:
             continue
         data = json.loads(path.read_text(encoding="utf-8"))
         for item in data.get("tools", []):
-            specs.append(
-                {
-                    **item,
-                    "provider": item.get("provider", "generated_python"),
-                    "runner": "generated_python_tool",
-                    "source": str(path),
-                    "execution": "on_demand_generated_python",
-                }
-            )
+            spec = {
+                **item,
+                "provider": item.get("provider", "generated_python"),
+                "runner": "generated_python_tool",
+                "source": str(path),
+                "execution": "on_demand_generated_python",
+            }
+            try:
+                code_path = resolve_generated_tool_code(spec)
+                initial_state = "shadow" if spec.get("generated_by") == "toolsmith_template" else "candidate"
+                quality = quality_for_spec(spec, code_path, initial_state=initial_state)
+                spec.update(
+                    {
+                        "artifact_hash": quality["artifact_hash"],
+                        "quality_state": quality["state"],
+                        "quality_score": quality["quality_score"],
+                        "quality_stats": quality.get("stats", {}),
+                    }
+                )
+            except (OSError, ValueError):
+                spec.update({"quality_state": "quarantined", "quality_score": 0.0})
+            specs.append(spec)
     return specs
 
 
@@ -79,12 +105,12 @@ def resolve_generated_tool_code(spec: dict[str, Any]) -> Path:
     roots = [CONFIG_TOOL_DIR, DATA_TOOL_DIR]
     if candidate.is_absolute():
         resolved = candidate.resolve()
-        if not any(str(resolved).startswith(str(root.resolve())) for root in roots):
+        if not any(resolved.is_relative_to(root.resolve()) for root in roots):
             raise ValueError("Generated tool code path is outside approved generated tool directories.")
         return resolved
     for root in roots:
         resolved = (root / candidate).resolve()
-        if resolved.exists() and str(resolved).startswith(str(root.resolve())):
+        if resolved.exists() and resolved.is_relative_to(root.resolve()):
             return resolved
     raise FileNotFoundError(f"Generated tool code not found: {code_path}")
 
@@ -136,24 +162,54 @@ def attribute_name(node: ast.Attribute) -> str:
 
 
 def execute_generated_tool(target: str, spec: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
-    code_path = resolve_generated_tool_code(spec)
-    validation = validate_generated_tool_code(code_path)
-    if not validation.ok:
+    try:
+        code_path = resolve_generated_tool_code(spec)
+    except (OSError, ValueError) as exc:
         return {
             "allowed": False,
             "verified": False,
             "exploited": False,
-            "reason": "Generated tool failed static validation: " + "; ".join(validation.errors),
+            "tool_error": True,
+            "reason": f"Generated tool code could not be resolved: {exc}",
+            "quality_state": "quarantined",
         }
-
-    module_name = f"medflow_generated_{int(time.time() * 1000)}"
-    import_spec = importlib.util.spec_from_file_location(module_name, code_path)
-    if import_spec is None or import_spec.loader is None:
-        return {"allowed": False, "verified": False, "exploited": False, "reason": "Could not import generated tool."}
-    module = importlib.util.module_from_spec(import_spec)
-    import_spec.loader.exec_module(module)
-    if not hasattr(module, "run"):
-        return {"allowed": False, "verified": False, "exploited": False, "reason": "Generated tool has no run(context) function."}
+    initial_state = "shadow" if spec.get("generated_by") == "toolsmith_template" else "candidate"
+    try:
+        quality = quality_for_spec(spec, code_path, initial_state=initial_state)
+    except ValueError as exc:
+        return {
+            "allowed": False,
+            "verified": False,
+            "exploited": False,
+            "tool_error": True,
+            "reason": f"Generated tool failed integrity validation: {exc}",
+            "quality_state": "quarantined",
+        }
+    artifact = quality["artifact_hash"]
+    quality_state = quality["state"]
+    if quality_state not in EXECUTABLE_STATES:
+        return {
+            "allowed": False,
+            "verified": False,
+            "exploited": False,
+            "reason": f"Generated tool is not executable while quality state is {quality_state}.",
+            "artifact_hash": artifact,
+            "quality_state": quality_state,
+            "quality_score": quality["quality_score"],
+        }
+    validation = validate_generated_tool_code(code_path)
+    if not validation.ok:
+        updated = record_quality_outcome(artifact, "tool_error", reason="; ".join(validation.errors))
+        return {
+            "allowed": False,
+            "verified": False,
+            "exploited": False,
+            "tool_error": True,
+            "reason": "Generated tool failed static validation: " + "; ".join(validation.errors),
+            "artifact_hash": artifact,
+            "quality_state": updated["state"],
+            "quality_score": updated["quality_score"],
+        }
 
     lab = load_lab_config()
     tool_context = {
@@ -166,23 +222,202 @@ def execute_generated_tool(target: str, spec: dict[str, Any], context: dict[str,
     }
     started = time.perf_counter()
     try:
-        result = module.run(tool_context)
-    except Exception as exc:
+        timeout_seconds = max(1, min(int(spec.get("timeout_seconds") or 15), 60))
+    except (TypeError, ValueError):
+        updated = record_quality_outcome(artifact, "tool_error", reason="timeout_seconds is not an integer.")
+        return {
+            "allowed": False,
+            "verified": False,
+            "exploited": False,
+            "tool_error": True,
+            "reason": "Generated tool has an invalid timeout_seconds value.",
+            "artifact_hash": artifact,
+            "quality_state": updated["state"],
+            "quality_score": updated["quality_score"],
+        }
+    start_method = "fork" if "fork" in multiprocessing.get_all_start_methods() else "spawn"
+    process_context = multiprocessing.get_context(start_method)
+    queue = process_context.Queue(maxsize=1)
+    process = process_context.Process(target=_generated_tool_worker, args=(str(code_path), tool_context, queue))
+    try:
+        process.start()
+    except (OSError, RuntimeError) as exc:
+        updated = record_quality_outcome(artifact, "tool_error", reason=f"Worker start failed: {exc}")
         return {
             "allowed": True,
             "verified": False,
             "exploited": False,
-            "reason": f"Generated tool raised {type(exc).__name__}: {exc}",
-            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "tool_error": True,
+            "reason": f"Generated tool worker could not start: {exc}",
+            "artifact_hash": artifact,
+            "quality_state": updated["state"],
+            "quality_score": updated["quality_score"],
         }
-    if not isinstance(result, dict):
-        result = {"allowed": True, "verified": False, "exploited": False, "reason": "Generated tool returned a non-dict result."}
+    process.join(timeout_seconds)
+    if process.is_alive():
+        terminate_generated_tool_process(process)
+        updated = record_quality_outcome(artifact, "tool_error", reason=f"Execution timed out after {timeout_seconds}s.")
+        return {
+            "allowed": True,
+            "verified": False,
+            "exploited": False,
+            "tool_error": True,
+            "reason": f"Generated tool timed out after {timeout_seconds}s.",
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "artifact_hash": artifact,
+            "quality_state": updated["state"],
+            "quality_score": updated["quality_score"],
+        }
+    try:
+        envelope = queue.get(timeout=1)
+    except Empty:
+        envelope = {"ok": False, "error": f"Generated tool process exited with code {process.exitcode} without a result."}
+    if not envelope.get("ok"):
+        updated = record_quality_outcome(artifact, "tool_error", reason=str(envelope.get("error") or "Unknown worker error."))
+        return {
+            "allowed": True,
+            "verified": False,
+            "exploited": False,
+            "tool_error": True,
+            "reason": str(envelope.get("error") or "Generated tool worker failed."),
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "artifact_hash": artifact,
+            "quality_state": updated["state"],
+            "quality_score": updated["quality_score"],
+        }
+    result = envelope.get("result")
+    result_validation = validate_generated_tool_result(result)
+    if not result_validation.ok:
+        reason = "Generated tool returned an invalid result: " + "; ".join(result_validation.errors)
+        updated = record_quality_outcome(artifact, "tool_error", reason=reason)
+        return {
+            "allowed": True,
+            "verified": False,
+            "exploited": False,
+            "tool_error": True,
+            "reason": reason,
+            "elapsed_seconds": round(time.perf_counter() - started, 3),
+            "generated_tool_code": str(code_path),
+            "artifact_hash": artifact,
+            "quality_state": updated["state"],
+            "quality_score": updated["quality_score"],
+        }
+    result = dict(result)
+    if result.get("tool_error"):
+        result["verified"] = False
+        result["exploited"] = False
+        outcome = "tool_error"
+    elif result.get("inconclusive"):
+        outcome = "inconclusive"
+    else:
+        outcome = "completed"
+    updated = record_quality_outcome(artifact, outcome, reason=str(result.get("reason") or result.get("proof_output") or "")[:500])
     result.setdefault("allowed", True)
     result.setdefault("verified", False)
     result.setdefault("exploited", False)
+    if outcome != "tool_error":
+        apply_quality_result_gate(result, quality_state)
     result["elapsed_seconds"] = result.get("elapsed_seconds", round(time.perf_counter() - started, 3))
     result["generated_tool_code"] = str(code_path)
+    result["artifact_hash"] = artifact
+    result["quality_state"] = updated["state"]
+    result["quality_score"] = updated["quality_score"]
     return result
+
+
+def apply_quality_result_gate(result: dict[str, Any], quality_state: str) -> dict[str, Any]:
+    if quality_state in FINDING_STATES:
+        return result
+    result["reported_verified"] = bool(result.get("verified"))
+    result["reported_exploited"] = bool(result.get("exploited"))
+    result["verified"] = False
+    result["exploited"] = False
+    result["quality_shadow"] = True
+    reported_reason = str(result.get("reason") or "").strip()
+    if reported_reason:
+        result["reported_reason"] = reported_reason
+    notice = (
+        f"Tool ran in {quality_state} quality state; its self-reported result is retained as shadow evidence "
+        "but cannot create a finding."
+    )
+    result["reason"] = f"{notice} Tool result: {reported_reason}" if reported_reason else notice
+    return result
+
+
+def validate_generated_tool_result(result: Any) -> GeneratedToolValidation:
+    if not isinstance(result, dict):
+        return GeneratedToolValidation(False, ["run(context) must return a dictionary."])
+    errors: list[str] = []
+    for field in ["allowed", "verified", "exploited", "inconclusive", "tool_error"]:
+        if field in result and not isinstance(result[field], bool):
+            errors.append(f"{field} must be a boolean.")
+    verified = result.get("verified") is True
+    exploited = result.get("exploited") is True
+    if exploited and not verified:
+        errors.append("exploited=true requires verified=true.")
+    if result.get("allowed") is False and (verified or exploited):
+        errors.append("A blocked result cannot be verified or exploited.")
+    if result.get("tool_error") is True and (verified or exploited):
+        errors.append("A tool error cannot be verified or exploited.")
+    if verified or exploited:
+        proof = result.get("proof_output") or result.get("evidence")
+        if not proof:
+            errors.append("Positive results require proof_output or evidence.")
+    try:
+        encoded = json.dumps(result, default=reject_non_json_value)
+    except (TypeError, ValueError):
+        errors.append("Result must contain only JSON-serializable values.")
+    else:
+        if len(encoded.encode("utf-8")) > 262_144:
+            errors.append("Result exceeds the 256 KiB output limit.")
+    return GeneratedToolValidation(not errors, sorted(set(errors)))
+
+
+def reject_non_json_value(value: Any) -> Any:
+    raise TypeError(f"Value is not JSON serializable: {type(value).__name__}")
+
+
+def _generated_tool_worker(code_path: str, context: dict[str, Any], queue: Any) -> None:
+    try:
+        if hasattr(os, "setsid"):
+            os.setsid()
+        module_name = f"medflow_generated_{int(time.time() * 1000)}"
+        import_spec = importlib.util.spec_from_file_location(module_name, code_path)
+        if import_spec is None or import_spec.loader is None:
+            raise RuntimeError("Could not import generated tool.")
+        module = importlib.util.module_from_spec(import_spec)
+        import_spec.loader.exec_module(module)
+        if not hasattr(module, "run"):
+            raise RuntimeError("Generated tool has no run(context) function.")
+        result = module.run(context)
+        validation = validate_generated_tool_result(result)
+        if not validation.ok:
+            raise ValueError("; ".join(validation.errors))
+        queue.put({"ok": True, "result": result})
+    except BaseException as exc:
+        queue.put({"ok": False, "error": f"Generated tool raised {type(exc).__name__}: {exc}"})
+
+
+def terminate_generated_tool_process(process: multiprocessing.Process) -> None:
+    if hasattr(os, "killpg"):
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            process.terminate()
+    else:
+        process.terminate()
+    process.join(2)
+    if process.is_alive():
+        if hasattr(os, "killpg"):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except OSError:
+                process.kill()
+        else:
+            process.kill()
+        process.join(1)
 
 
 def execute_generated_tool_by_id(tool_id: str, target: str, context: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -195,29 +430,53 @@ def execute_generated_tool_by_role(operation_role: str, target: str, context: di
     return execute_generated_tool(target, spec, context or {})
 
 
-def save_generated_tool(tool_id: str, spec: dict[str, Any], code: str, overwrite: bool = False) -> dict[str, Path]:
+def save_generated_tool(
+    tool_id: str,
+    spec: dict[str, Any],
+    code: str,
+    overwrite: bool = False,
+    *,
+    initial_state: str = "candidate",
+) -> dict[str, Path]:
     safe_id = safe_tool_id(tool_id)
+    digest = artifact_hash(code, spec)
     code_dir = DATA_TOOL_DIR / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
-    code_path = code_dir / f"{safe_id}.py"
-    if code_path.exists() and not overwrite:
-        raise FileExistsError(f"Generated tool code already exists: {code_path}")
-    code_path.write_text(code, encoding="utf-8")
-    validation = validate_generated_tool_code(code_path)
-    if not validation.ok:
-        code_path.unlink(missing_ok=True)
-        raise ValueError("Generated tool failed static validation: " + "; ".join(validation.errors))
+    code_path = code_dir / f"{safe_id}_{digest[:12]}.py"
 
     specs_path = DATA_TOOL_DIR / "tool_specs.json"
-    if specs_path.exists():
-        data = json.loads(specs_path.read_text(encoding="utf-8"))
-    else:
-        data = {"schema_version": 1, "tools": []}
-    tools = [item for item in data.get("tools", []) if item.get("id") != spec["id"]]
-    tools.append({**spec, "code_path": f"code/{safe_id}.py"})
-    data["tools"] = sorted(tools, key=lambda item: item.get("id", ""))
-    DATA_TOOL_DIR.mkdir(parents=True, exist_ok=True)
-    specs_path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    with registry_write_lock(specs_path):
+        if specs_path.exists():
+            data = json.loads(specs_path.read_text(encoding="utf-8"))
+        else:
+            data = {"schema_version": 2, "tools": []}
+        current = next((item for item in data.get("tools", []) if item.get("id") == spec["id"]), None)
+        if current and current.get("artifact_hash") != digest and not overwrite:
+            raise FileExistsError(
+                f"Generated tool {spec['id']} already has a different cached version; "
+                "use overwrite to create a new immutable version."
+            )
+        if code_path.exists() and code_path.read_text(encoding="utf-8") != code:
+            raise ValueError(f"Generated tool hash collision at {code_path}.")
+        created_code = not code_path.exists()
+        if created_code:
+            code_path.write_text(code, encoding="utf-8")
+        validation = validate_generated_tool_code(code_path)
+        if not validation.ok:
+            if created_code:
+                code_path.unlink(missing_ok=True)
+            raise ValueError("Generated tool failed static validation: " + "; ".join(validation.errors))
+
+        tools = [item for item in data.get("tools", []) if item.get("id") != spec["id"]]
+        stored_spec = {**spec, "artifact_hash": digest, "code_path": f"code/{code_path.name}"}
+        tools.append(stored_spec)
+        data["schema_version"] = 2
+        data["tools"] = sorted(tools, key=lambda item: item.get("id", ""))
+        DATA_TOOL_DIR.mkdir(parents=True, exist_ok=True)
+        temporary_specs = specs_path.with_suffix(".tmp")
+        temporary_specs.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+        temporary_specs.replace(specs_path)
+    register_artifact(stored_spec, code_path, initial_state=initial_state)
     return {"specs": specs_path, "code": code_path}
 
 

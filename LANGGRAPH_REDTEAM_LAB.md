@@ -145,7 +145,16 @@ Create a tool from an LLM prompt:
 .venv/bin/python scripts/create_generated_tool.py --provider llama --prompt "Create a safe observation tool for Redis INFO exposure on port 6379"
 ```
 
-Before an on-demand generated tool is stored, the project validates that the Python file defines `run(context)`, only imports from the small allowed import set, and avoids blocked dynamic execution primitives. This is not a full sandbox yet; it is the current review/cache layer before moving generated tools into an isolated execution environment.
+Before an on-demand generated tool is stored, the project validates that the Python file defines `run(context)`, only imports from the small allowed import set, and avoids blocked dynamic execution primitives. Each implementation is stored under an immutable content hash and receives an independent quality history. LLM-generated tools begin as blocked `candidate` artifacts; reviewed tools can run in `shadow` mode, where their output is visible but cannot create findings. Only `trusted` artifacts can contribute findings. Runtime contract failures, timeouts, contradictions, and repeated errors degrade or quarantine the exact artifact version.
+
+Review and update quality state with:
+
+```bash
+.venv/bin/python scripts/manage_tool_cache.py list
+.venv/bin/python scripts/manage_tool_cache.py inspect generated:redis_banner
+```
+
+See `FUNCTIONALITY_GUIDE.md` for lifecycle transitions and independent evidence commands. The child-process timeout and static checks are reliability boundaries, not a complete OS sandbox; production deployment should still execute generated code in an isolated container or worker.
 
 ## Vulhub Lab Set
 

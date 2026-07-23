@@ -206,7 +206,7 @@ Create an LLM-generated tool and cache it only if it passes static validation:
 .venv/bin/python scripts/create_generated_tool.py --id custom_observer --provider llama --prompt "Create a safe TCP banner observation tool for an allowlisted lab service."
 ```
 
-Generated tools must define `run(context: dict) -> dict`. The current static validator requires approved imports and blocks risky constructs such as `eval`, `exec`, `open`, and unsafe subprocess APIs.
+Generated tools must define `run(context: dict) -> dict`. The static validator requires approved imports and blocks risky constructs such as `eval`, `exec`, `open`, and unsafe subprocess APIs. Tool code and behavior-relevant metadata are content-addressed, while lifecycle history is stored in `data/generated_tools/quality_registry.json`. Graph lookup refreshes quality fields from that registry-backed cache, so stale graph metadata does not override the current `candidate`, `shadow`, `trusted`, `degraded`, or `quarantined` state.
 
 ## Identity Imports
 

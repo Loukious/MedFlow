@@ -50,6 +50,9 @@ def main() -> None:
             {
                 "action": result.action,
                 "tool_id": (result.spec or {}).get("id"),
+                "artifact_hash": (result.spec or {}).get("artifact_hash"),
+                "quality_state": (result.spec or {}).get("quality_state"),
+                "quality_score": (result.spec or {}).get("quality_score"),
                 "paths": {key: str(value) for key, value in (result.paths or {}).items()},
                 "graph_node_id": result.graph_node_id,
             },

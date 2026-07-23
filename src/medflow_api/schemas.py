@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 Provider = Literal["gpt_oss", "llama", "qwen"]
 ExecutionMode = Literal["safe", "aggressive_lab"]
 MetasploitAction = Literal["plan", "check", "exploit"]
+ToolQualityState = Literal["candidate", "fixture_passed", "shadow", "trusted", "degraded", "quarantined"]
+ToolQualityOutcome = Literal["completed", "confirmed", "contradicted", "fixture_passed", "inconclusive", "tool_error"]
 
 
 class WebAuthContextRequest(BaseModel):
@@ -65,6 +67,18 @@ class ToolsmithCreateRequest(BaseModel):
     provider: Provider = "gpt_oss"
     graph: str = "data/graph/medflow_graph.json"
     overwrite: bool = False
+
+
+class ToolQualityStateRequest(BaseModel):
+    state: ToolQualityState
+    reason: str = Field(..., min_length=1)
+    force: bool = False
+
+
+class ToolQualityOutcomeRequest(BaseModel):
+    outcome: ToolQualityOutcome
+    reason: str = ""
+    evidence_id: str = ""
 
 
 class ApiResponse(BaseModel):

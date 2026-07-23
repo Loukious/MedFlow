@@ -10,6 +10,7 @@ from medflow_graph.memory import GraphStore
 from medflow_ti.config import Settings, load_settings
 
 from .generated_tools import load_generated_tool_specs, save_generated_tool, tcp_banner_template
+from .tool_quality import quality_for_spec
 
 
 DEFAULT_GRAPH_PATH = Path("data/graph/medflow_graph.json")
@@ -45,7 +46,13 @@ class ToolsmithAgent:
     def lookup(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         store = GraphStore.load(self.graph_path)
         graph_hits = store.search(query, limit=limit, node_types={"GeneratedTool"})
-        spec_hits = self._spec_lookup(query, limit=limit)
+        current_specs = load_generated_tool_specs()
+        current_by_id = {str(spec.get("id")): spec for spec in current_specs}
+        for hit in graph_hits:
+            current = current_by_id.get(tool_identity(hit))
+            if current:
+                hit["attributes"] = {**(hit.get("attributes") or {}), **current}
+        spec_hits = self._spec_lookup(query, limit=limit, specs=current_specs)
         seen = {tool_identity(hit) for hit in graph_hits}
         for hit in spec_hits:
             identity = tool_identity(hit)
@@ -66,20 +73,36 @@ class ToolsmithAgent:
         if template != "tcp_banner":
             raise ValueError(f"Unsupported Toolsmith template: {template}")
         spec, code = tcp_banner_template(tool_id, service, port)
-        return self.save(tool_id, spec, code, overwrite=overwrite)
+        return self.save(tool_id, spec, code, overwrite=overwrite, initial_state="shadow")
 
     def create_from_prompt(self, *, tool_id: str, prompt: str, overwrite: bool = False) -> ToolsmithResult:
         spec, code = self.generate_with_llm(prompt)
         spec["id"] = spec.get("id") or f"generated:{tool_id}"
-        return self.save(tool_id, spec, code, overwrite=overwrite)
+        return self.save(tool_id, spec, code, overwrite=overwrite, initial_state="candidate")
 
-    def save(self, tool_id: str, spec: dict[str, Any], code: str, *, overwrite: bool = False) -> ToolsmithResult:
+    def save(
+        self,
+        tool_id: str,
+        spec: dict[str, Any],
+        code: str,
+        *,
+        overwrite: bool = False,
+        initial_state: str = "candidate",
+    ) -> ToolsmithResult:
         spec["id"] = spec.get("id") or f"generated:{tool_id}"
         if not spec["id"].startswith("generated:"):
             spec["id"] = f"generated:{spec['id']}"
         spec["provider"] = "generated_python"
         spec["runner"] = "generated_python_tool"
-        paths = save_generated_tool(tool_id, spec, code, overwrite=overwrite)
+        paths = save_generated_tool(tool_id, spec, code, overwrite=overwrite, initial_state=initial_state)
+        quality = quality_for_spec(spec, paths["code"], initial_state=initial_state)
+        spec.update(
+            {
+                "artifact_hash": quality["artifact_hash"],
+                "quality_state": quality["state"],
+                "quality_score": quality["quality_score"],
+            }
+        )
         graph_node_id = self.index_tool(spec, paths)
         return ToolsmithResult(action="created", spec=spec, paths=paths, graph_node_id=graph_node_id)
 
@@ -108,6 +131,9 @@ class ToolsmithAgent:
                 "allowed_execution_modes": spec.get("allowed_execution_modes", []),
                 "match": match,
                 "proof_goal": spec.get("proof_goal"),
+                "artifact_hash": spec.get("artifact_hash"),
+                "quality_state": spec.get("quality_state"),
+                "quality_score": spec.get("quality_score"),
                 "spec_path": str(paths.get("specs", "")),
                 "code_path": str(paths.get("code", "")),
             },
@@ -131,6 +157,10 @@ def run(context: dict) -> dict:
     ...
 
 Allowed imports: concurrent, ftplib, html, ipaddress, json, re, shutil, socket, subprocess, time, urllib, xml.
+The result must be JSON-serializable. Fields allowed, verified, exploited, inconclusive, and tool_error
+must be booleans when present. A positive verified or exploited result must include proof_output or
+evidence, and exploited=true requires verified=true. Use tool_error=true only for a broken tool or
+internal execution failure, not when the target simply has no finding.
 Return strict JSON with keys:
 spec, code
 
@@ -145,10 +175,16 @@ User tool request:
         parsed = parse_json_object(raw)
         return parsed["spec"], parsed["code"]
 
-    def _spec_lookup(self, query: str, limit: int) -> list[dict[str, Any]]:
+    def _spec_lookup(
+        self,
+        query: str,
+        limit: int,
+        *,
+        specs: list[dict[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         query_terms = {term for term in query.lower().replace("/", " ").replace(":", " ").split() if len(term) > 1}
         hits: list[dict[str, Any]] = []
-        for spec in load_generated_tool_specs():
+        for spec in specs if specs is not None else load_generated_tool_specs():
             text = " ".join(
                 [
                     str(spec.get("id", "")),

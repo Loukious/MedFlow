@@ -6,7 +6,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from medflow_api.schemas import CampaignRequest, ToolsmithCreateRequest
+from medflow_api.schemas import (
+    CampaignRequest,
+    ToolQualityOutcomeRequest,
+    ToolQualityStateRequest,
+    ToolsmithCreateRequest,
+)
 from medflow_graph.memory import GraphStore
 from medflow_redteam.campaign import http_ports_from_scan, http_ports_from_services, observation_status
 from medflow_redteam.capabilities import capability_match_score, select_capabilities_for_services
@@ -22,10 +27,22 @@ from medflow_redteam.command_planner import (
     validate_proof_command,
     validate_validation_strategy,
 )
-from medflow_redteam.generated_tools import load_generated_tool_specs, resolve_generated_tool_code, validate_generated_tool_code
+from medflow_redteam.generated_tools import (
+    apply_quality_result_gate,
+    load_generated_tool_specs,
+    resolve_generated_tool_code,
+    validate_generated_tool_code,
+    validate_generated_tool_result,
+)
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.metasploit_runner import first_interesting_line, has_command_output_proof, payload_attempts
 from medflow_redteam.tools import normalize_validation_status, route_technology_signals, web_control_checks
+from medflow_redteam.tool_quality import (
+    artifact_hash,
+    quality_for_spec,
+    record_quality_outcome,
+    set_quality_state,
+)
 from medflow_redteam.web_executor import validate_probe
 from medflow_redteam.web_reasoner import plan_web_probes
 from medflow_redteam.web_app import (
@@ -60,6 +77,8 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertTrue(llm.hide_reasoning)
         self.assertEqual(CampaignRequest(goal="authorized lab test").provider, "gpt_oss")
         self.assertEqual(ToolsmithCreateRequest(id="observer").provider, "gpt_oss")
+        self.assertEqual(ToolQualityStateRequest(state="shadow", reason="fixture reviewed").state, "shadow")
+        self.assertEqual(ToolQualityOutcomeRequest(outcome="tool_error").outcome, "tool_error")
 
     def test_validation_statuses_are_explicit(self) -> None:
         self.assertEqual(
@@ -312,6 +331,143 @@ class RedTeamCoreTests(unittest.TestCase):
                 limit=1,
             )
             self.assertEqual(selected["selected_candidates"][0]["runner"], "generated_python_tool")
+
+    def test_generated_tool_quality_lifecycle_and_circuit_breaker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry = root / "quality.json"
+            code_path = root / "observer.py"
+            code = "def run(context: dict) -> dict:\n    return {'verified': True}\n"
+            code_path.write_text(code, encoding="utf-8")
+            spec = {"id": "generated:observer", "runner": "generated_python_tool", "match": {"service": "http"}}
+
+            candidate = quality_for_spec(spec, code_path, registry_path=registry)
+            self.assertEqual(candidate["state"], "candidate")
+            fixture = record_quality_outcome(candidate["artifact_hash"], "fixture_passed", registry_path=registry)
+            self.assertEqual(fixture["state"], "fixture_passed")
+            shadow = set_quality_state(
+                candidate["artifact_hash"],
+                "shadow",
+                reason="Fixture behavior reviewed.",
+                registry_path=registry,
+            )
+            self.assertEqual(shadow["state"], "shadow")
+            with self.assertRaises(ValueError):
+                set_quality_state(
+                    candidate["artifact_hash"],
+                    "trusted",
+                    reason="Trust must be evidence-driven.",
+                    registry_path=registry,
+                )
+            for _ in range(3):
+                trusted = record_quality_outcome(
+                    candidate["artifact_hash"],
+                    "confirmed",
+                    reason="Independent benchmark agreed.",
+                    evidence_id=f"benchmark-{_}",
+                    registry_path=registry,
+                )
+            self.assertEqual(trusted["state"], "trusted")
+            degraded = record_quality_outcome(
+                candidate["artifact_hash"],
+                "contradicted",
+                reason="Independent validator disagreed.",
+                evidence_id="contradiction-1",
+                registry_path=registry,
+            )
+            self.assertEqual(degraded["state"], "degraded")
+            quarantined = record_quality_outcome(
+                candidate["artifact_hash"],
+                "contradicted",
+                reason="Second independent contradiction.",
+                evidence_id="contradiction-2",
+                registry_path=registry,
+            )
+            self.assertEqual(quarantined["state"], "quarantined")
+
+            changed = code + "\n# new version\n"
+            self.assertNotEqual(artifact_hash(code, spec), artifact_hash(changed, spec))
+            decorated = {
+                **spec,
+                "quality_state": "trusted",
+                "quality_score": 0.95,
+                "quality_stats": {"executions": 4},
+                "score": 100,
+                "reasons": ["runtime ranking"],
+                "score_explanation": "runtime ranking",
+                "matched_service": {"port": "80", "service": "http"},
+            }
+            self.assertEqual(artifact_hash(code, spec), artifact_hash(code, decorated))
+
+    def test_candidate_contradiction_quarantines_without_becoming_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry = root / "quality.json"
+            code_path = root / "observer.py"
+            code_path.write_text("def run(context: dict) -> dict:\n    return {}\n", encoding="utf-8")
+            candidate = quality_for_spec({"id": "generated:new"}, code_path, registry_path=registry)
+            result = record_quality_outcome(
+                candidate["artifact_hash"],
+                "contradicted",
+                reason="Known-negative fixture produced a finding.",
+                evidence_id="fixture-known-negative",
+                registry_path=registry,
+            )
+            self.assertEqual(result["state"], "quarantined")
+
+    def test_independent_quality_evidence_cannot_be_counted_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            registry = root / "quality.json"
+            code_path = root / "observer.py"
+            code_path.write_text("def run(context: dict) -> dict:\n    return {}\n", encoding="utf-8")
+            candidate = quality_for_spec({"id": "generated:new"}, code_path, registry_path=registry)
+            record_quality_outcome(
+                candidate["artifact_hash"],
+                "fixture_passed",
+                reason="Fixture passed.",
+                registry_path=registry,
+            )
+            set_quality_state(
+                candidate["artifact_hash"],
+                "shadow",
+                reason="Begin shadow evaluation.",
+                registry_path=registry,
+            )
+            record_quality_outcome(
+                candidate["artifact_hash"],
+                "confirmed",
+                evidence_id="benchmark-run-1",
+                registry_path=registry,
+            )
+            with self.assertRaises(ValueError):
+                record_quality_outcome(
+                    candidate["artifact_hash"],
+                    "confirmed",
+                    evidence_id="benchmark-run-1",
+                    registry_path=registry,
+                )
+
+    def test_shadow_tool_cannot_create_a_finding(self) -> None:
+        result = apply_quality_result_gate({"verified": True, "exploited": True, "proof_output": "self report"}, "shadow")
+        self.assertFalse(result["verified"])
+        self.assertFalse(result["exploited"])
+        self.assertTrue(result["reported_verified"])
+        self.assertTrue(result["quality_shadow"])
+
+    def test_generated_tool_result_contract_rejects_false_positive_shapes(self) -> None:
+        self.assertFalse(validate_generated_tool_result({"verified": "false"}).ok)
+        self.assertFalse(validate_generated_tool_result({"verified": True, "exploited": False}).ok)
+        self.assertFalse(
+            validate_generated_tool_result(
+                {"verified": False, "exploited": True, "proof_output": "unexpected"}
+            ).ok
+        )
+        self.assertTrue(
+            validate_generated_tool_result(
+                {"allowed": True, "verified": True, "exploited": False, "proof_output": "HTTP 200"}
+            ).ok
+        )
 
     def test_observation_status_does_not_call_errors_success(self) -> None:
         self.assertEqual(

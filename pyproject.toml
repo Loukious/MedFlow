@@ -24,6 +24,7 @@ dependencies = [
   "uvicorn[standard]",
   "pymetasploit3",
   "playwright",
+  "schemathesis>=4.24,<5",
 ]
 
 [project.scripts]

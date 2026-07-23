@@ -210,6 +210,9 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
             )
             for context in request.web_auth_contexts
         ],
+        stateful_api=request.stateful_api,
+        stateful_max_requests=request.stateful_max_requests,
+        stateful_max_workflows=request.stateful_max_workflows,
     )
     saved = save_campaign_run(run, Path(request.output_dir))
     payload = asdict(run)

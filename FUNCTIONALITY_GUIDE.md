@@ -615,3 +615,74 @@ GET  /toolsmith/cache/{tool-id-or-hash}
 POST /toolsmith/cache/{tool-id-or-hash}/state
 POST /toolsmith/cache/{tool-id-or-hash}/outcomes
 ```
+
+## 17. Stateful Differential API Agent
+
+The stateful API agent detects authorization failures that a one-request scanner cannot prove. It
+discovers an OpenAPI document, loads it through Schemathesis, converts its operations into a
+producer/consumer resource graph, and executes bounded workflows against an allowlisted target.
+
+The primary workflow is:
+
+```text
+discover schema -> model operations -> establish two principals -> create resource as A
+-> read as A -> replay as B twice -> replay anonymously twice -> clean up when DELETE exists
+```
+
+The deterministic evidence oracle only reports a confirmed BOLA finding when the owner can read the
+resource, another principal can retrieve materially equivalent data twice, and the operation policy
+or returned fields indicate owner-scoped or sensitive data. An OpenAPI-protected operation that
+returns equivalent data anonymously twice is reported as ignored API authentication. HTTP bodies,
+passwords, tokens, cookies, and authorization values are not persisted in traces; traces retain
+status, response shape, field names, size, hash, timing, and redacted references.
+
+Run it directly:
+
+```bash
+.venv/bin/python scripts/run_stateful_api_agent.py 172.19.0.2 \
+  --ports 5000 \
+  --execution-mode aggressive_lab \
+  --max-requests 50 \
+  --max-workflows 10
+```
+
+Run it through the LangGraph campaign:
+
+```bash
+.venv/bin/python scripts/run_redteam_campaign.py \
+  "Assess the authorized API lab for stateful authorization flaws" \
+  --target 172.19.0.2 \
+  --ports 5000 \
+  --execute-recon \
+  --stateful-api \
+  --execution-mode aggressive_lab \
+  --stateful-max-requests 50 \
+  --stateful-max-workflows 10 \
+  --no-llm
+```
+
+The REST API accepts the same controls on `POST /campaigns`:
+
+```json
+{
+  "goal": "Assess the authorized API lab for stateful authorization flaws",
+  "target": "172.19.0.2",
+  "ports": [5000],
+  "execute_recon": true,
+  "stateful_api": true,
+  "execution_mode": "aggressive_lab",
+  "stateful_max_requests": 50,
+  "stateful_max_workflows": 10,
+  "use_llm": false
+}
+```
+
+`safe` mode performs read-only comparisons and needs supplied authentication contexts for meaningful
+cross-principal checks. `aggressive_lab` may use documented registration and login operations to
+create two random test identities, then create and delete test resources when the schema exposes the
+required operations. It must only be used on an authorized disposable lab. The feature is opt-in;
+without `stateful_api`, existing campaign behavior is unchanged.
+
+The observation graph stores `ApiSchema`, `ApiOperation`, and `ApiResource` nodes plus operation
+producer/consumer edges. Current discovery supports OpenAPI 2.x and 3.x. GraphQL and schema-less
+traffic inference are not yet statefully exercised.

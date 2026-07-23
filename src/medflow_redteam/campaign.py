@@ -92,6 +92,9 @@ class CampaignState(TypedDict, total=False):
     metasploit_action: str
     use_llm: bool
     web_auth_contexts: list[WebAuthContext]
+    stateful_api: bool
+    stateful_max_requests: int
+    stateful_max_workflows: int
     ports: list[int]
     tcp: dict[str, Any]
     nmap_result: ToolResult
@@ -557,6 +560,10 @@ and success criteria. Do not provide exploit instructions.
                     auth_contexts=state.get("web_auth_contexts", []),
                     provider=state.get("provider", "gpt_oss"),
                     use_llm=state.get("use_llm", False),
+                    stateful_api=state.get("stateful_api", False),
+                    execution_mode=state.get("execution_mode", "safe"),
+                    stateful_max_requests=state.get("stateful_max_requests", 40),
+                    stateful_max_workflows=state.get("stateful_max_workflows", 8),
                 )
                 http_status = observation_status(http, "http_probe")
                 fingerprint_status = observation_status(fingerprints, "web_fingerprints")
@@ -588,6 +595,21 @@ and success criteria. Do not provide exploit instructions.
                 {"tool": "browser_web_collector", "input": target, "status": "success" if web_assessment.get("browser_observations", {}).get("available") else "not_applicable", "evidence": json.dumps(web_assessment.get("browser_observations", {}), indent=2)[:1200]},
                 {"tool": "llm_web_planner", "input": target, "status": "success" if web_assessment.get("planned_probes") else "ran_no_finding", "evidence": json.dumps(web_assessment.get("planned_probes", []), indent=2)[:1200]},
                 {"tool": "bounded_web_executor", "input": target, "status": "success" if web_assessment.get("probe_results") else "not_applicable", "evidence": json.dumps(web_assessment.get("probe_results", []), indent=2)[:1200]},
+                {
+                    "tool": "stateful_api_agent",
+                    "input": target,
+                    "status": web_assessment.get("stateful_api", {}).get("status", "not_applicable"),
+                    "evidence": json.dumps(
+                        {
+                            "schema": web_assessment.get("stateful_api", {}).get("schema"),
+                            "operations": len(web_assessment.get("stateful_api", {}).get("operations", [])),
+                            "workflows": len(web_assessment.get("stateful_api", {}).get("workflows", [])),
+                            "findings": web_assessment.get("stateful_api", {}).get("findings", []),
+                            "request_budget": web_assessment.get("stateful_api", {}).get("request_budget"),
+                        },
+                        indent=2,
+                    )[:1200],
+                },
                 {"tool": "web_app_assessment", "input": target, "status": web_assessment_status, "evidence": json.dumps({"routes": len(web_assessment.get("routes", [])), "findings": web_assessment.get("findings", []), "graph_summary": web_assessment.get("graph_summary", {})}, indent=2)[:1200]},
             ]
             traces = [
@@ -1046,6 +1068,9 @@ def run_campaign(
     max_failed_rounds: int = 2,
     stop_on_success: bool = True,
     web_auth_contexts: list[WebAuthContext] | None = None,
+    stateful_api: bool = False,
+    stateful_max_requests: int = 40,
+    stateful_max_workflows: int = 8,
 ) -> CampaignRun:
     started = time.perf_counter()
     settings = load_settings()
@@ -1062,6 +1087,9 @@ def run_campaign(
         "metasploit_action": metasploit_action,
         "use_llm": use_llm,
         "web_auth_contexts": web_auth_contexts or [],
+        "stateful_api": stateful_api,
+        "stateful_max_requests": max(1, min(stateful_max_requests, 200)),
+        "stateful_max_workflows": max(1, min(stateful_max_workflows, 30)),
         "ports": ports or (default_ports_for_target(target) if target else []),
         "steps": [],
         "phases": [],

@@ -20,6 +20,7 @@ from .web_browser import collect_browser_observations
 from .web_executor import execute_planned_probes
 from .web_kb import query_web_appsec
 from .web_reasoner import assess_web_observations, plan_web_probes
+from .web_stateful import run_stateful_api_assessment
 
 
 DEFAULT_PATHS = ["/"]
@@ -85,6 +86,7 @@ class WebAssessment:
     browser_observations: dict[str, Any]
     planned_probes: list[dict[str, Any]]
     probe_results: list[dict[str, Any]]
+    stateful_api: dict[str, Any]
     kb_context: list[dict[str, Any]]
     auth_contexts: list[dict[str, Any]]
     graph_summary: dict[str, int]
@@ -151,26 +153,63 @@ def run_web_assessment(
     auth_contexts: list[WebAuthContext] | None = None,
     provider: str = "gpt_oss",
     use_llm: bool = False,
+    stateful_api: bool = False,
+    execution_mode: str = "safe",
+    stateful_max_requests: int = 40,
+    stateful_max_workflows: int = 8,
 ) -> dict[str, Any]:
     started = time.monotonic()
     target = validate_target(target)
     auth_contexts = auth_contexts or []
     primary_context = auth_contexts[0] if auth_contexts else None
     routes = crawl_web(target, ports, paths=paths, max_depth=max_depth, max_routes=max_routes, auth_context=primary_context)
-    browser_observations = collect_browser_observations([route.url for route in routes if route.status and 200 <= route.status < 300]) if use_llm else {"available": False, "reason": "LLM web planning disabled."}
+    browser_observations = (
+        collect_browser_observations([route.url for route in routes if route.status and 200 <= route.status < 300])
+        if use_llm or stateful_api
+        else {"available": False, "reason": "Browser collection disabled."}
+    )
     planned_probes = plan_web_probes(web_planning_context(routes, browser_observations), provider) if use_llm else []
     probe_results = execute_planned_probes(planned_probes, web_observations(routes), auth_headers=auth_headers(primary_context)) if planned_probes else []
+    stateful_result = (
+        run_stateful_api_assessment(
+            target,
+            ports,
+            observed_urls=[
+                *[route.url for route in routes],
+                *[
+                    str(item.get("url") or "")
+                    for item in browser_observations.get("requests", [])
+                    if item.get("url")
+                ],
+            ],
+            auth_contexts=auth_contexts,
+            execution_mode=execution_mode,
+            max_requests=stateful_max_requests,
+            max_workflows=stateful_max_workflows,
+        )
+        if stateful_api
+        else {"enabled": False, "status": "disabled", "findings": [], "request_traces": []}
+    )
     findings = run_safe_web_probes(
         routes,
         provider=provider,
         use_llm=use_llm,
         probe_results=probe_results,
     )
+    findings.extend(WebFinding(**item) for item in stateful_result.get("findings", []))
     if len(auth_contexts) >= 2:
         findings.extend(run_idor_confirmation(routes, auth_contexts[0], auth_contexts[1]))
         findings = dedupe_findings(findings)
     kb_context = retrieve_web_context(routes, findings) if use_kb else []
-    graph = persist_web_observation_graph(target, ports, routes, findings, graph_path)
+    findings = dedupe_findings(findings)
+    graph = persist_web_observation_graph(
+        target,
+        ports,
+        routes,
+        findings,
+        graph_path,
+        stateful_api=stateful_result,
+    )
     assessment = WebAssessment(
         target=target,
         ports=ports,
@@ -179,6 +218,7 @@ def run_web_assessment(
         browser_observations=browser_observations,
         planned_probes=planned_probes,
         probe_results=probe_results,
+        stateful_api=stateful_result,
         kb_context=kb_context,
         auth_contexts=[redact_auth_context(context) for context in auth_contexts],
         graph_summary=graph.summary(),
@@ -478,6 +518,8 @@ def persist_web_observation_graph(
     routes: list[WebRoute],
     findings: list[WebFinding],
     path: Path = GRAPH_PATH,
+    *,
+    stateful_api: dict[str, Any] | None = None,
 ) -> GraphStore:
     store = GraphStore.load(path)
     host = store.upsert_node("Host", target, context=f"Web assessment target {target}", stable_key=f"host:{target}").node
@@ -517,8 +559,59 @@ def persist_web_observation_graph(
         ).node
         route_node = store.upsert_node("Route", finding.url, stable_key=f"route:{normalize_url(finding.url)}").node
         store.add_edge(finding_node.id, route_node.id, "FINDING_ON_ROUTE")
+    persist_stateful_api_graph(store, host.id, stateful_api or {})
     store.save()
     return store
+
+
+def persist_stateful_api_graph(store: GraphStore, host_id: str, assessment: dict[str, Any]) -> None:
+    schema = assessment.get("schema") or {}
+    if not schema:
+        return
+    schema_node = store.upsert_node(
+        "ApiSchema",
+        str(schema.get("url") or schema.get("title") or "OpenAPI"),
+        context=f"{schema.get('title', 'OpenAPI')} version {schema.get('version', '')}",
+        attributes={
+            "title": schema.get("title"),
+            "version": schema.get("version"),
+            "base_url": schema.get("base_url"),
+            "engine": assessment.get("engine"),
+        },
+        stable_key=f"api-schema:{schema.get('url')}",
+    ).node
+    store.add_edge(host_id, schema_node.id, "HOST_EXPOSES_API_SCHEMA")
+    operation_nodes: dict[str, Any] = {}
+    for operation in assessment.get("operations", []):
+        label = str(operation.get("label") or "")
+        if not label:
+            continue
+        node = store.upsert_node(
+            "ApiOperation",
+            label,
+            context=f"{operation.get('summary', '')} role={operation.get('role', '')}",
+            attributes=operation,
+            stable_key=f"api-operation:{schema.get('base_url')}:{label}",
+        ).node
+        operation_nodes[label] = node
+        store.add_edge(schema_node.id, node.id, "SCHEMA_DEFINES_OPERATION")
+    for dependency in assessment.get("dependencies", []):
+        producer = operation_nodes.get(str(dependency.get("producer") or ""))
+        consumer = operation_nodes.get(str(dependency.get("consumer") or ""))
+        if not producer or not consumer:
+            continue
+        resource = store.upsert_node(
+            "ApiResource",
+            str(dependency.get("resource") or "resource"),
+            context=f"Stateful API resource consumed through {dependency.get('parameter', '')}",
+            attributes={
+                "parameter": dependency.get("parameter"),
+                "relationship": dependency.get("relationship"),
+            },
+            stable_key=f"api-resource:{schema.get('base_url')}:{dependency.get('resource')}",
+        ).node
+        store.add_edge(producer.id, resource.id, "API_OPERATION_PRODUCES")
+        store.add_edge(resource.id, consumer.id, "API_OPERATION_CONSUMES")
 
 
 def query_params_from_url(url: str) -> list[WebParam]:

@@ -13,3 +13,4 @@ pypdf
 fastapi
 uvicorn[standard]
 pymetasploit3
+schemathesis>=4.24,<5

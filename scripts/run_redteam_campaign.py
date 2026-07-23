@@ -188,6 +188,23 @@ def main() -> None:
     parser.add_argument("--target", default=None, help="Optional allowlisted target for active reconnaissance.")
     parser.add_argument("--ports", default=None, help="Comma-separated ports for active reconnaissance.")
     parser.add_argument("--auth-contexts", default=None, help="JSON file containing pre-authenticated lab contexts for authorized IDOR comparison.")
+    parser.add_argument(
+        "--stateful-api",
+        action="store_true",
+        help="Run bounded OpenAPI workflow and cross-principal checks. Writes require aggressive_lab mode.",
+    )
+    parser.add_argument(
+        "--stateful-max-requests",
+        type=int,
+        default=40,
+        help="Maximum HTTP requests for the stateful API agent.",
+    )
+    parser.add_argument(
+        "--stateful-max-workflows",
+        type=int,
+        default=8,
+        help="Maximum API workflows per stateful assessment phase.",
+    )
     parser.add_argument("--execute-recon", action="store_true", help="Let the Reconnaissance Agent run active allowlisted probes.")
     parser.add_argument("--execute-validation", action="store_true", help="Select and run matching capability validation tools after recon.")
     parser.add_argument("--max-capabilities", type=int, default=5, help="Maximum matching validation capabilities to execute.")
@@ -239,6 +256,9 @@ def main() -> None:
         max_failed_rounds=args.max_failed_rounds,
         stop_on_success=not args.no_stop_on_success,
         web_auth_contexts=load_auth_contexts(args.auth_contexts),
+        stateful_api=args.stateful_api,
+        stateful_max_requests=args.stateful_max_requests,
+        stateful_max_workflows=args.stateful_max_workflows,
     )
     saved = save_campaign_run(run, Path(args.output_dir))
     graph_update = None

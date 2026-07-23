@@ -427,6 +427,41 @@ python scripts/run_redteam_campaign.py "Assess an unknown authorized lab target 
 
 `--loop` enables validation automatically and stops on success by default. Use `--no-stop-on-success` only when you want it to keep trying additional safe capability checks after a positive result.
 
+Run the stateful differential API agent through the campaign:
+
+```bash
+python scripts/run_redteam_campaign.py \
+  "Assess the authorized API lab for stateful authorization flaws" \
+  --target 172.19.0.2 \
+  --ports 5000 \
+  --execute-recon \
+  --stateful-api \
+  --execution-mode aggressive_lab \
+  --stateful-max-requests 50 \
+  --stateful-max-workflows 10 \
+  --no-llm
+```
+
+The agent discovers OpenAPI 2.x/3.x contracts, models operation and resource dependencies with
+Schemathesis, and executes bounded multi-principal workflows. In `safe` mode it is read-only. In
+`aggressive_lab` it may register disposable principals and create test resources through operations
+documented by the target schema. A BOLA result is confirmed only after an owner baseline and two
+successful alternate-principal replays. Anonymous authentication bypasses are also repeated before
+confirmation. Secrets and response bodies are excluded from persisted traces.
+
+The standalone runner avoids the rest of the campaign:
+
+```bash
+python scripts/run_stateful_api_agent.py 172.19.0.2 \
+  --ports 5000 \
+  --execution-mode aggressive_lab \
+  --max-requests 50 \
+  --max-workflows 10
+```
+
+Campaign graph output includes `ApiSchema`, `ApiOperation`, and `ApiResource` nodes and
+producer/consumer edges. GraphQL and schema-less traffic inference remain future extensions.
+
 Review graph-memory duplicate decisions:
 
 ```bash

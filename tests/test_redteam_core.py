@@ -6,6 +6,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import schemathesis
+
 from medflow_api.schemas import (
     CampaignRequest,
     ToolQualityOutcomeRequest,
@@ -60,6 +62,19 @@ from medflow_redteam.web_app import (
     run_safe_web_probes,
 )
 from medflow_redteam.web_kb import load_seed_documents
+from medflow_redteam.web_stateful import (
+    BudgetExhausted,
+    Exchange,
+    RequestBudget,
+    build_operation_dependencies,
+    confirms_cross_principal_access,
+    confirms_ignored_auth,
+    extract_operations,
+    safe_url,
+    schema_failure_types,
+    schema_property_names,
+    synthesize_object,
+)
 from medflow_ti.llm import make_llm
 
 
@@ -76,6 +91,7 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertEqual(llm.reasoning_effort, "medium")
         self.assertTrue(llm.hide_reasoning)
         self.assertEqual(CampaignRequest(goal="authorized lab test").provider, "gpt_oss")
+        self.assertFalse(CampaignRequest(goal="authorized lab test").stateful_api)
         self.assertEqual(ToolsmithCreateRequest(id="observer").provider, "gpt_oss")
         self.assertEqual(ToolQualityStateRequest(state="shadow", reason="fixture reviewed").state, "shadow")
         self.assertEqual(ToolQualityOutcomeRequest(outcome="tool_error").outcome, "tool_error")
@@ -309,6 +325,167 @@ class RedTeamCoreTests(unittest.TestCase):
         no_owner = WebAuthContext(name="alice", headers=owner.headers)
         with patch("medflow_redteam.web_app.fetch_text", side_effect=fake_fetch):
             self.assertEqual(run_idor_confirmation([route], no_owner, alternate), [])
+
+    def test_stateful_api_builds_resource_dependencies_from_openapi(self) -> None:
+        raw_schema = {
+            "openapi": "3.0.0",
+            "info": {"title": "Demo", "version": "1"},
+            "paths": {
+                "/records": {
+                    "post": {
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {"record_id": {"type": "string"}},
+                                    }
+                                }
+                            }
+                        },
+                        "responses": {"201": {"description": "created"}},
+                    }
+                },
+                "/records/{record_id}": {
+                    "get": {
+                        "security": [{"bearerAuth": []}],
+                        "description": "Only the owner may retrieve this private record.",
+                        "parameters": [
+                            {
+                                "name": "record_id",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {
+                            "200": {
+                                "description": "record",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {"record_id": {"type": "string"}, "secret": {"type": "string"}},
+                                        }
+                                    }
+                                },
+                            }
+                        },
+                    }
+                },
+            },
+        }
+        operations = extract_operations(raw_schema, schemathesis.openapi.from_dict(raw_schema))
+        dependencies = build_operation_dependencies(operations)
+        self.assertEqual(dependencies[0]["producer"], "POST /records")
+        self.assertEqual(dependencies[0]["consumer"], "GET /records/{record_id}")
+        read = next(item for item in operations if item.method == "GET")
+        self.assertTrue(read.owner_scoped)
+        self.assertTrue(read.protected)
+
+    def test_stateful_differential_requires_material_access_and_rejects_auth_denials(self) -> None:
+        raw_schema = {
+            "openapi": "3.0.0",
+            "info": {"title": "Demo", "version": "1"},
+            "paths": {
+                "/records/{record_id}": {
+                    "get": {
+                        "security": [{"bearerAuth": []}],
+                        "description": "Only the owner may retrieve the secret.",
+                        "parameters": [
+                            {
+                                "name": "record_id",
+                                "in": "path",
+                                "required": True,
+                                "schema": {"type": "string"},
+                            }
+                        ],
+                        "responses": {"200": {"description": "record"}},
+                    }
+                }
+            },
+        }
+        operation = extract_operations(raw_schema, schemathesis.openapi.from_dict(raw_schema))[0]
+        owner = Exchange(
+            operation=operation,
+            principal="owner",
+            status=200,
+            url="http://lab/records/1",
+            elapsed_ms=1,
+            response_text='{"record_id":"1","secret":"proof"}',
+            response_json={"record_id": "1", "secret": "proof"},
+            response_fields=["recordid", "secret"],
+        )
+        alternate = Exchange(
+            operation=operation,
+            principal="alternate",
+            status=200,
+            url="http://lab/records/1",
+            elapsed_ms=1,
+            response_text='{"record_id":"1","secret":"proof"}',
+            response_json={"record_id": "1", "secret": "proof"},
+            response_fields=["recordid", "secret"],
+        )
+        denied = Exchange(
+            operation=operation,
+            principal="anonymous",
+            status=200,
+            url="http://lab/records/1",
+            elapsed_ms=1,
+            response_text='{"message":"Missing authorization"}',
+            response_json={"message": "Missing authorization"},
+            response_fields=["message"],
+        )
+        self.assertTrue(confirms_cross_principal_access(operation, owner, alternate))
+        self.assertTrue(confirms_ignored_auth(owner, alternate))
+        self.assertFalse(denied.successful)
+        self.assertFalse(confirms_ignored_auth(owner, denied))
+
+    def test_stateful_api_synthesizes_fresh_identity_data_and_redacts_query_values(self) -> None:
+        body = synthesize_object(
+            {
+                "type": "object",
+                "properties": {
+                    "username": {"type": "string", "example": "demo"},
+                    "password": {"type": "string", "example": "pass"},
+                    "email": {"type": "string", "format": "email"},
+                    "is_admin": {"type": "boolean"},
+                    "role": {"type": "string", "enum": ["admin", "user"]},
+                },
+            },
+            role="owner",
+            purpose="identity",
+        )
+        self.assertTrue(str(body["username"]).startswith("owner_"))
+        self.assertNotEqual(body["password"], "pass")
+        self.assertTrue(str(body["email"]).endswith("@example.test"))
+        self.assertFalse(body["is_admin"])
+        self.assertEqual(body["role"], "user")
+        self.assertEqual(
+            safe_url("http://lab/api?token=secret&id=101"),
+            "http://lab/api?token=<redacted>&id=<redacted>",
+        )
+        self.assertEqual(
+            schema_property_names(
+                {
+                    "type": "object",
+                    "properties": {
+                        "record": {
+                            "type": "object",
+                            "properties": {"secret": {"type": "string"}},
+                        }
+                    },
+                }
+            ),
+            {"record", "secret"},
+        )
+        failures = schema_failure_types(ExceptionGroup("response body: sensitive", [ValueError("token=secret")]))
+        self.assertEqual(failures, ["ValueError"])
+        budget = RequestBudget(1)
+        budget.consume()
+        self.assertEqual(budget.remaining, 0)
+        with self.assertRaises(BudgetExhausted):
+            budget.consume()
 
     def test_generated_tool_specs_from_dynamic_cache_are_valid(self) -> None:
         specs = load_generated_tool_specs()

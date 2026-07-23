@@ -43,6 +43,9 @@ class CampaignRequest(BaseModel):
     stop_on_success: bool = True
     output_dir: str = "reports/redteam_campaign"
     web_auth_contexts: list[WebAuthContextRequest] = Field(default_factory=list, max_length=4)
+    stateful_api: bool = False
+    stateful_max_requests: int = Field(default=40, ge=1, le=200)
+    stateful_max_workflows: int = Field(default=8, ge=1, le=30)
 
 
 class GraphSearchRequest(BaseModel):

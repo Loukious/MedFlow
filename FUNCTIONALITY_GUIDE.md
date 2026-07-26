@@ -686,3 +686,42 @@ without `stateful_api`, existing campaign behavior is unchanged.
 The observation graph stores `ApiSchema`, `ApiOperation`, and `ApiResource` nodes plus operation
 producer/consumer edges. Current discovery supports OpenAPI 2.x and 3.x. GraphQL and schema-less
 traffic inference are not yet statefully exercised.
+
+## 18. Autonomous URL Campaign Routing
+
+For a web target, the regular LangGraph campaign accepts only the high-level objective and the
+explicitly authorized URL. The Campaign Orchestrator asks the selected LLM which internal
+specialists are relevant. When it selects authorization testing, the Web/API Agent launches a
+bounded same-origin subworkflow; callers do not select or invoke that agent directly.
+
+```bash
+.venv/bin/python scripts/run_redteam_campaign.py \
+  "Run an authorized black-box web/API assessment and autonomously validate applicable access-control boundaries" \
+  --url https://authorized-lab.example \
+  --report
+```
+
+The subworkflow discovers routes from target evidence, creates applicable authorization
+hypotheses, executes a bounded request matrix, reviews coverage, independently audits each verdict,
+and returns normalized findings to the campaign report. It cannot follow redirects or leave the
+explicit URL origin. It cannot invent credentials, identity headers, role values, sessions,
+accounts, or object identifiers. Safe mode permits read-only discovery; `aggressive_lab` also makes
+mutating methods available, but every write must contain a synthetic test marker.
+When the target exposes only an authentication barrier and the prompt supplies no valid context,
+the overall posture is `inconclusive`; a `401` proves that narrow anonymous boundary, not the
+security of hidden authenticated functionality.
+
+The REST API uses the same interface:
+
+```json
+{
+  "goal": "Run an authorized black-box web/API assessment",
+  "target_url": "https://authorized-lab.example",
+  "provider": "qwen",
+  "use_llm": true
+}
+```
+
+Campaign JSON and debug exports include `campaign_routing` and `authorization_assessment`. Detailed
+request and response evidence is stored under the campaign output directory's `authorization`
+subdirectory.

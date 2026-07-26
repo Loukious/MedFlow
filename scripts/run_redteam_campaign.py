@@ -63,7 +63,9 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
     status = "ERROR" if run.error else "OK"
     console.rule(f"MedFlow Red-Team Campaign [{status}]")
     console.print(f"Goal: [bold]{run.goal}[/bold]")
-    console.print(f"Target: [bold]{run.target or 'tabletop / no live target'}[/bold]")
+    console.print(
+        f"Target: [bold]{run.target_url or run.target or 'tabletop / no live target'}[/bold]"
+    )
     console.print(f"Provider: [bold]{run.provider}[/bold]")
     console.print(f"Elapsed: [bold]{run.elapsed_seconds:.2f}s[/bold]")
     if run.error:
@@ -75,6 +77,7 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
             f"Agents completed: {len(run.agents)}",
             f"Services observed: {len(run.services)}",
             f"Web routes found: {web_route_label(run)}",
+            f"Authorization assessment: {authorization_label(run)}",
             f"Graph memory hits: {len((run.graph_memory or {}).get('hits', []))}",
             f"Normalized evidence: {len(run.normalized_evidence)}",
             f"Loop stop: {(run.loop_summary or {}).get('stop_reason', 'not enabled')}",
@@ -182,10 +185,32 @@ def web_route_label(run: CampaignRun) -> str:
     return f"{len(found)} non-404, {len(artifact)} artifact signal(s)"
 
 
+def authorization_label(run: CampaignRun) -> str:
+    assessment = run.authorization_assessment or {}
+    status = assessment.get("status", "not selected")
+    posture = assessment.get("overall_security_posture")
+    requests = assessment.get("http_requests", 0)
+    return f"{status}, posture={posture or 'n/a'}, requests={requests}"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the MedFlow multi-agent red-team campaign planner.")
     parser.add_argument("goal", help="High-level campaign goal, for example: validate hospital portal identity attack paths.")
-    parser.add_argument("--target", default=None, help="Optional allowlisted target for active reconnaissance.")
+    scope = parser.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--target",
+        default=None,
+        help="Optional allowlisted IP target for network reconnaissance.",
+    )
+    scope.add_argument(
+        "--url",
+        dest="target_url",
+        default=None,
+        help=(
+            "Explicitly authorized HTTP(S) target. The campaign orchestrator autonomously routes "
+            "bounded web/API specialist work."
+        ),
+    )
     parser.add_argument("--ports", default=None, help="Comma-separated ports for active reconnaissance.")
     parser.add_argument("--auth-contexts", default=None, help="JSON file containing pre-authenticated lab contexts for authorized IDOR comparison.")
     parser.add_argument(
@@ -240,6 +265,7 @@ def main() -> None:
     run = run_campaign(
         goal=args.goal,
         target=args.target,
+        target_url=args.target_url,
         ports=parse_ports(args.ports),
         provider=args.provider,
         execute_recon=args.execute_recon,
@@ -259,6 +285,7 @@ def main() -> None:
         stateful_api=args.stateful_api,
         stateful_max_requests=args.stateful_max_requests,
         stateful_max_workflows=args.stateful_max_workflows,
+        authorization_output_root=Path(args.output_dir) / "authorization",
     )
     saved = save_campaign_run(run, Path(args.output_dir))
     graph_update = None

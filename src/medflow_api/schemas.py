@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 Provider = Literal["gpt_oss", "llama", "qwen"]
@@ -24,6 +24,7 @@ class WebAuthContextRequest(BaseModel):
 class CampaignRequest(BaseModel):
     goal: str = Field(..., min_length=1)
     target: str | None = None
+    target_url: str | None = None
     ports: list[int] | None = None
     execute_recon: bool = True
     execute_validation: bool = False
@@ -46,6 +47,12 @@ class CampaignRequest(BaseModel):
     stateful_api: bool = False
     stateful_max_requests: int = Field(default=40, ge=1, le=200)
     stateful_max_workflows: int = Field(default=8, ge=1, le=30)
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "CampaignRequest":
+        if self.target and self.target_url:
+            raise ValueError("Supply either target or target_url, not both.")
+        return self
 
 
 class GraphSearchRequest(BaseModel):

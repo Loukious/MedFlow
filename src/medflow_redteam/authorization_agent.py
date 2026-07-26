@@ -57,6 +57,8 @@ class PromptDocument:
     allowed_origins: tuple[str, ...]
     primary_sha256: str = ""
     supplemental_sources: tuple[Path, ...] = ()
+    discovery_mode: bool = False
+    allowed_methods: tuple[str, ...] = ()
 
 
 @dataclass
@@ -194,14 +196,29 @@ class GenericHttpPlanTool:
             self.document.text,
             baseline_headers,
             mutable_headers,
+            allow_empty=self.document.discovery_mode,
+            evidence_text=self.scope_evidence_text(),
         )
         if self.target_origin:
             if target_origin != self.target_origin:
                 raise ValueError("Follow-up plans cannot change target origin.")
-            if baseline_headers != self.baseline_headers:
-                raise ValueError("Follow-up plans cannot change the supplied baseline identity.")
-            if mutable_headers != self.mutable_headers:
-                raise ValueError("Follow-up plans cannot change mutable headers.")
+            if self.document.discovery_mode:
+                for name, value in self.baseline_headers.items():
+                    if baseline_headers.get(name) != value:
+                        raise ValueError(
+                            "Follow-up plans cannot remove or change an established baseline header."
+                        )
+                if not self.mutable_headers.issubset(mutable_headers):
+                    raise ValueError(
+                        "Follow-up plans cannot remove established mutable headers."
+                    )
+            else:
+                if baseline_headers != self.baseline_headers:
+                    raise ValueError(
+                        "Follow-up plans cannot change the supplied baseline identity."
+                    )
+                if mutable_headers != self.mutable_headers:
+                    raise ValueError("Follow-up plans cannot change mutable headers.")
 
         tests = validate_declared_tests(arguments.get("tests"))
         candidate_tests = dict(self.declared_tests)
@@ -232,8 +249,8 @@ class GenericHttpPlanTool:
         # Commit scope and test state only after the entire batch has passed validation.
         if not self.target_origin:
             self.target_origin = target_origin
-            self.baseline_headers = baseline_headers
-            self.mutable_headers = mutable_headers
+        self.baseline_headers = baseline_headers
+        self.mutable_headers = mutable_headers
         self.declared_tests = candidate_tests
         return {
             "target_origin": target_origin,
@@ -263,7 +280,10 @@ class GenericHttpPlanTool:
         method = str(item.get("method") or "").upper().strip()
         if method not in SAFE_METHODS | MUTATING_METHODS:
             raise ValueError(f"Unsupported HTTP method '{method}'.")
-        if not prompt_mentions_method(self.document.text, method):
+        if (
+            method not in self.document.allowed_methods
+            and not prompt_mentions_method(self.document.text, method)
+        ):
             raise ValueError(f"HTTP method {method} is not explicitly present in the prompt.")
         path = str(item.get("path") or "").strip()
         parsed_path = urlsplit(path)
@@ -279,10 +299,12 @@ class GenericHttpPlanTool:
         overrides = normalize_headers(item.get("header_overrides") or {})
         if not set(overrides).issubset(mutable_headers):
             raise ValueError("A request may override only model-declared mutable supplied headers.")
-        prompt_lower = self.document.text.lower()
+        allowed_value_text = self.scope_evidence_text().lower()
         for value in overrides.values():
-            if value.lower() not in prompt_lower:
-                raise ValueError("Header override values must be present in the supplied prompt.")
+            if value.lower() not in allowed_value_text:
+                raise ValueError(
+                    "Header override values must be present in the prompt or prior target evidence."
+                )
 
         body = item.get("body") or {}
         if not isinstance(body, dict):
@@ -303,6 +325,15 @@ class GenericHttpPlanTool:
             "header_overrides": overrides,
             "body": body,
         }
+
+    def scope_evidence_text(self) -> str:
+        parts = [self.document.text]
+        if self.document.discovery_mode:
+            for observation in self.observations:
+                response = observation.get("response") or {}
+                parts.append(str(response.get("body") or ""))
+                parts.append(json.dumps(response.get("headers") or {}, default=str))
+        return "\n".join(parts)
 
     def send(self, plan: dict[str, Any]) -> dict[str, Any]:
         url = self.target_origin.rstrip("/") + plan["path"]
@@ -373,18 +404,19 @@ class GenericAuthorizationAgent:
         if not settings.groq_api_key:
             raise AuthorizationAgentError("Missing GROQ_API_KEY/GroqAPIKey in .env.")
         normalized_provider = provider.strip().lower().replace("-", "_")
-        if normalized_provider not in {"gpt_oss", "qwen"}:
+        if normalized_provider not in {"gpt_oss", "llama", "qwen"}:
             raise AuthorizationAgentError(
-                "Authorization agent provider must be `gpt_oss` or `qwen`."
+                "Authorization agent provider must be `gpt_oss`, `llama`, or `qwen`."
             )
         self.document = document
         self.logger = logger
         self.provider = normalized_provider
-        self.model = (
-            settings.gpt_oss_model
-            if normalized_provider == "gpt_oss"
-            else settings.qwen_model
-        )
+        if normalized_provider == "gpt_oss":
+            self.model = settings.gpt_oss_model
+        elif normalized_provider == "llama":
+            self.model = settings.llama_model
+        else:
+            self.model = settings.qwen_model
         self.supports_json_schema = normalized_provider == "gpt_oss"
         self.client = Groq(api_key=settings.groq_api_key, max_retries=0)
         self.http_tool = GenericHttpPlanTool(
@@ -412,16 +444,28 @@ class GenericAuthorizationAgent:
             allowed_origins=self.document.allowed_origins,
             request_budget=self.http_tool.request_budget,
         )
+        scenario_instruction = (
+            "Treat the following as a high-level campaign objective plus an explicitly authorized "
+            "target. Autonomously discover applicable routes and authorization boundaries. Do not "
+            "invent credentials, identity headers, role values, or target behavior that is not in "
+            "the prompt or returned by the target."
+            if self.document.discovery_mode
+            else (
+                "Treat the following document as the complete scenario-specific prompt. Infer all "
+                "targets, supplied identity headers, mutable headers, endpoints, tests, and request "
+                "variants from it."
+            )
+        )
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": generic_planner_system_prompt()},
+            {
+                "role": "system",
+                "content": generic_planner_system_prompt(
+                    discovery_mode=self.document.discovery_mode
+                ),
+            },
             {
                 "role": "user",
-                "content": (
-                    "Treat the following document as the complete scenario-specific prompt. "
-                    "Infer all targets, supplied identity headers, mutable headers, endpoints, "
-                    "tests, and request variants from it.\n\n"
-                    f"{self.document.text}"
-                ),
+                "content": f"{scenario_instruction}\n\n{self.document.text}",
             },
         ]
         tool_schema = execute_plan_tool_schema()
@@ -479,7 +523,20 @@ class GenericAuthorizationAgent:
                 )
                 continue
 
-            self.coverage_review = self.review_coverage()
+            structural_gaps = self.structural_coverage_gaps()
+            self.coverage_review = (
+                {
+                    "complete": False,
+                    "covered_requirements": [],
+                    "missing_requirements": structural_gaps,
+                    "review_summary": (
+                        "Every declared test must have at least one executed request/response "
+                        "observation before semantic coverage review."
+                    ),
+                }
+                if structural_gaps
+                else self.review_coverage()
+            )
             self.logger.event("coverage_review", **self.coverage_review)
             if self.coverage_review["complete"]:
                 self.logger.status("Coverage reviewer found all prompt requirements represented")
@@ -488,15 +545,21 @@ class GenericAuthorizationAgent:
                 f"Coverage reviewer requested follow-up: "
                 f"{'; '.join(self.coverage_review['missing_requirements'])}"
             )
+            followup_scope = (
+                "Preserve established baseline headers and mutable headers. You may add a header "
+                "or value only when it appeared in the original prompt or prior target evidence."
+                if self.document.discovery_mode
+                else "Keep the same target, baseline headers, and mutable headers."
+            )
             messages.append(
                 {
                     "role": "user",
                     "content": (
                         "A separate model coverage review found missing or inconclusive work. "
-                        "Call execute_http_plan with only the necessary follow-up requests. Keep "
-                        "the same target, baseline headers, and mutable headers. Any previously "
+                        f"Call execute_http_plan with only the necessary follow-up requests. "
+                        f"{followup_scope} Any previously "
                         "declared test that you re-declare must remain unchanged; add a test only "
-                        "when the original prompt requires it and it was genuinely omitted.\n\n"
+                        "when it is required by the objective or supported target evidence.\n\n"
                         f"{json.dumps(self.coverage_review, indent=2)}"
                     ),
                 }
@@ -519,6 +582,18 @@ class GenericAuthorizationAgent:
             f"({len(self.http_tool.observations)} HTTP requests, {self.llm_calls} LLM calls)"
         )
         return assessment, self.http_tool.observations
+
+    def structural_coverage_gaps(self) -> list[str]:
+        observed_test_ids = {
+            str(item.get("test_id") or "")
+            for item in self.http_tool.observations
+            if item.get("test_id") != "recon"
+        }
+        return [
+            f"Declared test '{test_id}' has no executed evidence."
+            for test_id in self.http_tool.declared_tests
+            if test_id != "recon" and test_id not in observed_test_ids
+        ]
 
     def review_coverage(self) -> dict[str, Any]:
         evidence = compact_observations(
@@ -611,7 +686,9 @@ Executed evidence:
             interpretations=interpretations,
         )
         self.logger.status("The model is synthesizing the final assessment")
-        summary = self.summarize_assessment(test_results)
+        summary = self.apply_discovery_scope_guard(
+            self.summarize_assessment(test_results)
+        )
         assessment = {
             **summary,
             "tests": test_results,
@@ -656,7 +733,9 @@ Executed evidence:
         )
         self.logger.status("The model is re-synthesizing the audited assessment")
         updated = {
-            **self.summarize_assessment(test_results),
+            **self.apply_discovery_scope_guard(
+                self.summarize_assessment(test_results)
+            ),
             "tests": test_results,
             "response_interpretations": interpretations,
         }
@@ -801,6 +880,7 @@ Relevant baseline and test evidence:
         self,
         test_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        discovery_limitation = self.discovery_scope_limitation()
         prompt = f"""
 Synthesize the final assessment summary from these model test judgments. Preserve their verdicts
 and evidence references. If any test is FAIL, overall posture must be vulnerable. If no test fails
@@ -810,6 +890,12 @@ evidence-supported failed tests. Describe unseen implementation causes as black-
 not established internal facts. Every claim about authentication, sessions, tokens, databases,
 code, or server-side validation must explicitly say the observed behavior "is consistent with",
 "suggests", or "may indicate" that cause. Do not state that an unseen control exists or is absent.
+If the discovery limitation below is non-empty, the overall posture must be `inconclusive`, even
+when every narrow executed test passed. A denied unauthenticated request proves only that tested
+boundary; it does not prove the security of undiscovered authenticated routes or roles.
+
+Discovery limitation:
+{discovery_limitation or "none"}
 
 Original scenario:
 {self.document.text}
@@ -840,6 +926,51 @@ Test judgments:
         summary = parse_json_object(strip_thinking(message.content or ""))
         self.logger.event("assessment_summary_result", summary=summary)
         return summary
+
+    def discovery_scope_limitation(self) -> str:
+        if not self.document.discovery_mode:
+            return ""
+        if self.http_tool.baseline_headers:
+            return ""
+        successful = [
+            item
+            for item in self.http_tool.observations
+            if isinstance((item.get("response") or {}).get("status"), int)
+            and 200 <= int(item["response"]["status"]) < 400
+        ]
+        if successful:
+            return ""
+        return (
+            "No authenticated context was available and no request reached an application surface "
+            "that returned a successful response. The evidence can judge the tested anonymous "
+            "boundary only; authenticated routes, objects, roles, and functions remain unassessed."
+        )
+
+    def apply_discovery_scope_guard(
+        self,
+        summary: dict[str, Any],
+    ) -> dict[str, Any]:
+        limitation = self.discovery_scope_limitation()
+        if not limitation:
+            return summary
+        guarded = {**summary}
+        guarded["overall_security_posture"] = "inconclusive"
+        limitations = [
+            str(item)
+            for item in guarded.get("limitations") or []
+            if str(item).strip()
+        ]
+        if limitation not in limitations:
+            limitations.insert(0, limitation)
+        guarded["limitations"] = limitations
+        scope_note = (
+            "Overall scope is inconclusive because authenticated application surfaces could not "
+            "be reached or evaluated. "
+        )
+        executive = str(guarded.get("executive_summary") or "")
+        if not executive.startswith(scope_note):
+            guarded["executive_summary"] = scope_note + executive
+        return guarded
 
     def audit_test_judgments(
         self,
@@ -1032,7 +1163,7 @@ Relevant baseline and test evidence:
         }
         if self.provider == "gpt_oss":
             request["reasoning_effort"] = "medium"
-        else:
+        elif self.provider == "qwen":
             request["reasoning_effort"] = "none"
         if tools:
             request["tools"] = tools
@@ -1163,7 +1294,48 @@ def run_authorization_assignment(
     provider: str = "gpt_oss",
 ) -> AuthorizationRun:
     document = load_prompt_document(prompt_path, addenda=prompt_addenda)
-    run_id = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return run_authorization_document(
+        document,
+        output_root=output_root,
+        request_budget=request_budget,
+        max_tool_rounds=max_tool_rounds,
+        provider=provider,
+    )
+
+
+def run_inline_authorization_assessment(
+    prompt: str,
+    target_url: str,
+    *,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    request_budget: int = 30,
+    max_tool_rounds: int = 3,
+    provider: str = "gpt_oss",
+    allow_mutating_methods: bool = False,
+) -> AuthorizationRun:
+    document = build_inline_prompt_document(
+        prompt,
+        target_url,
+        allow_mutating_methods=allow_mutating_methods,
+    )
+    return run_authorization_document(
+        document,
+        output_root=output_root,
+        request_budget=request_budget,
+        max_tool_rounds=max_tool_rounds,
+        provider=provider,
+    )
+
+
+def run_authorization_document(
+    document: PromptDocument,
+    *,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+    request_budget: int = 30,
+    max_tool_rounds: int = 3,
+    provider: str = "gpt_oss",
+) -> AuthorizationRun:
+    run_id = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     run_dir = output_root / f"run_{run_id}"
     run_dir.mkdir(parents=True, exist_ok=False)
     logger = EventLogger(run_dir)
@@ -1419,9 +1591,11 @@ def finalize_authorization_run(
         "llm_profile": agent.provider,
         "api_endpoint": "https://api.groq.com/openai/v1/chat/completions",
         "model": agent.model,
-        "reasoning_effort": (
-            "medium" if agent.provider == "gpt_oss" else "none"
-        ),
+        "reasoning_effort": {
+            "gpt_oss": "medium",
+            "qwen": "none",
+            "llama": "not_applicable",
+        }[agent.provider],
         "prompt_source": str(document.source),
         "prompt_sources": [
             str(document.source),
@@ -1517,6 +1691,56 @@ def load_prompt_document(
     )
 
 
+def build_inline_prompt_document(
+    prompt: str,
+    target_url: str,
+    *,
+    allow_mutating_methods: bool = False,
+) -> PromptDocument:
+    objective = prompt.strip()
+    if not objective:
+        raise ValueError("Campaign prompt cannot be empty.")
+    explicit_url = target_url.strip()
+    parsed = urlparse(explicit_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Campaign URL must be an absolute HTTP(S) URL.")
+    if parsed.username or parsed.password or parsed.fragment:
+        raise ValueError("Campaign URL cannot contain credentials or a fragment.")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    port = f":{parsed.port}" if parsed.port else ""
+    origin = normalize_origin(f"{parsed.scheme}://{host}{port}")
+    allowed_methods = [*sorted(SAFE_METHODS)]
+    if allow_mutating_methods:
+        allowed_methods.extend(sorted(MUTATING_METHODS))
+    methods_text = ", ".join(allowed_methods)
+    text = f"""
+High-level campaign objective:
+{objective}
+
+Explicitly authorized target URL:
+{explicit_url}
+
+Campaign execution context:
+- Autonomously discover applicable same-origin routes and authorization boundaries.
+- Available HTTP methods: {methods_text}.
+- Do not leave the exact target origin, follow redirects, guess credentials, or invent identity
+  headers, role values, sessions, accounts, or object identifiers.
+- Treat authentication material supplied in the objective or exposed by the target as sensitive.
+- Use only bounded, non-destructive evidence collection. Mutating requests, when enabled, must use
+  unmistakable synthetic test markers.
+""".strip()
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return PromptDocument(
+        source=Path("<inline-campaign-prompt>"),
+        text=text,
+        sha256=digest,
+        allowed_origins=(origin,),
+        primary_sha256=digest,
+        discovery_mode=True,
+        allowed_methods=tuple(allowed_methods),
+    )
+
+
 def read_prompt_text(source: Path) -> str:
     if source.suffix.lower() == ".pdf":
         reader = PdfReader(source)
@@ -1581,20 +1805,29 @@ def validate_prompt_headers(
     prompt: str,
     baseline_headers: dict[str, str],
     mutable_headers: set[str],
+    *,
+    allow_empty: bool = False,
+    evidence_text: str = "",
 ) -> None:
-    if not baseline_headers:
+    if not baseline_headers and not allow_empty:
         raise ValueError("The model must identify the supplied baseline identity headers.")
-    prompt_lower = prompt.lower()
+    allowed_text = "\n".join([prompt, evidence_text]).lower()
     for name, value in baseline_headers.items():
-        if name not in prompt_lower:
-            raise ValueError(f"Baseline header '{name}' is not present in the prompt.")
-        if value.lower() not in prompt_lower:
-            raise ValueError(f"Baseline value for '{name}' is not present in the prompt.")
+        if name not in allowed_text:
+            raise ValueError(
+                f"Baseline header '{name}' is not present in the prompt or prior target evidence."
+            )
+        if value.lower() not in allowed_text:
+            raise ValueError(
+                f"Baseline value for '{name}' is not present in the prompt or prior target evidence."
+            )
     if not mutable_headers.issubset(baseline_headers):
         raise ValueError("Mutable headers must be a subset of supplied baseline headers.")
     for name in mutable_headers:
-        if name not in prompt_lower:
-            raise ValueError(f"Mutable header '{name}' is not present in the prompt.")
+        if name not in allowed_text:
+            raise ValueError(
+                f"Mutable header '{name}' is not present in the prompt or prior target evidence."
+            )
 
 
 def validate_declared_tests(value: Any) -> list[dict[str, Any]]:
@@ -1713,9 +1946,9 @@ def execute_plan_tool_schema() -> dict[str, Any]:
         "function": {
             "name": "execute_http_plan",
             "description": (
-                "Execute a batch of authorization-test HTTP requests derived only from the supplied "
-                "scenario prompt. The host validates same-origin scope, supplied identity headers, "
-                "mutable headers, methods, request budget, and harmless write markers."
+                "Execute a batch of authorization-test HTTP requests derived from the supplied "
+                "scenario and prior same-origin target evidence. The host validates scope, "
+                "identity context, methods, request budget, and harmless write markers."
             ),
             "parameters": {
                 "type": "object",
@@ -1751,21 +1984,37 @@ def execute_plan_tool_schema() -> dict[str, Any]:
     }
 
 
-def generic_planner_system_prompt() -> str:
-    return """
+def generic_planner_system_prompt(*, discovery_mode: bool = False) -> str:
+    discovery_rules = (
+        """
+- The prompt is a high-level objective rather than a prewritten request matrix. Select a small,
+  applicable set of authorization hypotheses and discover routes with bounded same-origin
+  requests.
+- Baseline headers may be empty when the target is unauthenticated. Never invent credentials,
+  cookies, identity headers, object IDs, or role values.
+- A later round may add headers or values only when they appeared in the original prompt or prior
+  target evidence. Preserve every established baseline header in subsequent rounds.
+- Start with the exact supplied URL path or `/`; use links, forms, API descriptions, and response
+  semantics to choose follow-up paths.
+"""
+        if discovery_mode
+        else """
+- Declare one generic test record for every required security test in the prompt.
+- Establish baseline behavior for each available endpoint using the supplied baseline identity.
+"""
+    )
+    return f"""
 You are a generic autonomous black-box authorization testing agent. All scenario-specific facts
-come only from the user's supplied prompt. You must infer its target origin, supplied baseline
-identity headers, which supplied headers the assignment explicitly asks you to vary, endpoints,
-reference identities, reconnaissance expectations, and every named required security test.
+come only from the user's supplied prompt and target responses. You must infer the target origin,
+available identity context, endpoints, reconnaissance expectations, and applicable security tests.
 
 Use `execute_http_plan` to execute the whole assessment without asking a human to run requests.
-Declare one generic test record for every required security test in the prompt. Then build a
-minimal but complete request matrix:
+Build a minimal but complete request matrix:
 - Function arguments must be strict JSON with no comments, trailing commas, or prose.
 - `recon` is a reserved request label for baselines; never declare it as a security test.
-- Establish baseline behavior for each available endpoint using the supplied baseline identity.
+{discovery_rules}
 - Test every object, role/header variation, function, write action, and privilege boundary named
-  by the prompt.
+  by the prompt or supported by observed target evidence.
 - Preserve any prompt-supplied mapping between a principal/account identifier and its linked
   resource/object identifier. Never assume those identifiers are interchangeable.
 - Keep identity headers fixed unless the prompt explicitly asks to vary that header.
@@ -1774,7 +2023,8 @@ minimal but complete request matrix:
 - Unless the prompt provides separate authenticated credentials, access obtained only by changing
   a client-controlled identity or role header is an authorization failure, not legitimate access
   by a different principal.
-- Use only methods and endpoints supported by the prompt.
+- Use only methods allowed by the host tool and endpoints supported by the prompt or target
+  evidence.
 - Mutating requests must use an unmistakable marker such as
   `AUTONOMOUS_SECURITY_TEST_ONLY`; do not use real-world operational values.
 - Use `recon` as test_id for baselines and declared test IDs for security checks.

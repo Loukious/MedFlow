@@ -44,7 +44,11 @@ def create_campaign(request: CampaignRequest) -> ApiResponse:
     record = jobs.submit(
         "campaign",
         lambda: run_campaign_job(request),
-        metadata={"goal": request.goal, "target": request.target},
+        metadata={
+            "goal": request.goal,
+            "target": request.target,
+            "target_url": request.target_url,
+        },
     )
     return ApiResponse(data=job_to_dict(record))
 
@@ -186,6 +190,7 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
     run = run_campaign(
         goal=request.goal,
         target=request.target,
+        target_url=request.target_url,
         ports=request.ports,
         provider=request.provider,
         execute_recon=request.execute_recon,
@@ -213,6 +218,7 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
         stateful_api=request.stateful_api,
         stateful_max_requests=request.stateful_max_requests,
         stateful_max_workflows=request.stateful_max_workflows,
+        authorization_output_root=Path(request.output_dir) / "authorization",
     )
     saved = save_campaign_run(run, Path(request.output_dir))
     payload = asdict(run)

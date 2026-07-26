@@ -18,6 +18,7 @@ class GroqLLM:
         hide_reasoning: bool = False,
         reasoning_effort: str | None = None,
         max_completion_tokens: int = 2048,
+        user_only: bool = False,
     ) -> None:
         if not api_key:
             raise RuntimeError("Missing Groq API key. Set GroqAPIKey or GROQ_API_KEY in .env.")
@@ -25,18 +26,33 @@ class GroqLLM:
         self.hide_reasoning = hide_reasoning
         self.reasoning_effort = reasoning_effort
         self.max_completion_tokens = max_completion_tokens
+        self.user_only = user_only
         self.client = Groq(api_key=api_key)
 
     def generate(self, prompt: str) -> str:
-        request = {
-            "model": self.model,
-            "messages": [
+        system_instruction = (
+            "You are a concise healthcare cybersecurity assistant. "
+            "Use only the provided retrieved context."
+        )
+        messages = (
+            [
+                {
+                    "role": "user",
+                    "content": f"{system_instruction}\n\n{prompt}",
+                }
+            ]
+            if self.user_only
+            else [
                 {
                     "role": "system",
-                    "content": "You are a concise healthcare cybersecurity assistant. Use only the provided retrieved context.",
+                    "content": system_instruction,
                 },
                 {"role": "user", "content": prompt},
-            ],
+            ]
+        )
+        request = {
+            "model": self.model,
+            "messages": messages,
             "temperature": 0.2,
             "max_completion_tokens": self.max_completion_tokens,
         }
@@ -75,7 +91,9 @@ def make_llm(
             groq_api_key,
             qwen_model,
             hide_reasoning=True,
+            reasoning_effort="none",
             max_completion_tokens=max_completion_tokens,
+            user_only=True,
         )
     raise ValueError(f"Unknown LLM provider '{provider}'. Choose gpt_oss, llama, or qwen.")
 

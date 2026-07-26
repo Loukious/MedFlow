@@ -13,6 +13,7 @@ from medflow_redteam.authorization_agent import (
     GenericHttpPlanTool,
     PromptDocument,
     apply_verdict_audit,
+    build_inline_prompt_document,
     compact_observations,
     extract_prompt_origins,
     is_json_validation_error,
@@ -188,6 +189,128 @@ class AuthorizationAgentTests(unittest.TestCase):
         self.assertIn("Treat header overrides", document.text)
         self.assertEqual(document.supplemental_sources, (addendum.resolve(),))
         self.assertNotEqual(document.sha256, document.primary_sha256)
+
+    def test_inline_campaign_prompt_uses_explicit_url_and_read_only_discovery(self) -> None:
+        document = build_inline_prompt_document(
+            "Autonomously assess applicable authorization boundaries.",
+            "https://demo.invalid/api/start",
+        )
+        plan = {
+            "target_origin": "https://demo.invalid",
+            "baseline_headers": {},
+            "mutable_headers": [],
+            "tests": [
+                {
+                    "test_id": "public_surface",
+                    "name": "Public authorization surface",
+                    "objective": "Discover whether protected functionality is public.",
+                    "pass_condition": "Protected functionality requires authorization.",
+                    "fail_condition": "Protected functionality is exposed anonymously.",
+                }
+            ],
+            "requests": [
+                {
+                    "action_id": "discover_start",
+                    "test_id": "public_surface",
+                    "objective": "Inspect the supplied starting route.",
+                    "method": "GET",
+                    "path": "/api/start",
+                    "header_overrides": {},
+                    "body": {},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = GenericHttpPlanTool(
+                document,
+                EventLogger(Path(tmp)),
+                request_budget=10,
+            )
+            validated = tool.validate_plan(plan)
+
+        self.assertTrue(document.discovery_mode)
+        self.assertEqual(document.allowed_origins, ("https://demo.invalid",))
+        self.assertIn("GET", document.allowed_methods)
+        self.assertNotIn("POST", document.allowed_methods)
+        self.assertEqual(validated["requests"][0]["path"], "/api/start")
+
+    def test_inline_discovery_accepts_only_evidence_derived_headers(self) -> None:
+        document = build_inline_prompt_document(
+            "Assess authorization boundaries.",
+            "https://demo.invalid/",
+        )
+        initial = {
+            "target_origin": "https://demo.invalid",
+            "baseline_headers": {},
+            "mutable_headers": [],
+            "tests": [
+                {
+                    "test_id": "role_boundary",
+                    "name": "Role boundary",
+                    "objective": "Assess an observed role boundary.",
+                    "pass_condition": "The boundary is enforced.",
+                    "fail_condition": "The boundary can be bypassed.",
+                }
+            ],
+            "requests": [
+                {
+                    "action_id": "discover_root",
+                    "test_id": "role_boundary",
+                    "objective": "Inspect the public root.",
+                    "method": "GET",
+                    "path": "/",
+                    "header_overrides": {},
+                    "body": {},
+                }
+            ],
+        }
+        followup = {
+            **initial,
+            "baseline_headers": {"X-Role": "patient"},
+            "mutable_headers": ["X-Role"],
+            "requests": [
+                {
+                    "action_id": "observed_patient_role",
+                    "test_id": "role_boundary",
+                    "objective": "Use the role context documented by the target.",
+                    "method": "GET",
+                    "path": "/account",
+                    "header_overrides": {"X-Role": "patient"},
+                    "body": {},
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = GenericHttpPlanTool(
+                document,
+                EventLogger(Path(tmp)),
+                request_budget=10,
+            )
+            tool.validate_plan(initial)
+            tool.observations.append(
+                {
+                    "response": {
+                        "body": "API usage: send X-Role: patient",
+                        "headers": {"content-type": "text/plain"},
+                    }
+                }
+            )
+            validated = tool.validate_plan(followup)
+            unsupported = {
+                **followup,
+                "baseline_headers": {"X-Role": "administrator"},
+                "requests": [
+                    {
+                        **followup["requests"][0],
+                        "action_id": "invented_admin_role",
+                        "header_overrides": {"X-Role": "administrator"},
+                    }
+                ],
+            }
+            with self.assertRaisesRegex(ValueError, "prior target evidence"):
+                tool.validate_plan(unsupported)
+
+        self.assertEqual(validated["baseline_headers"], {"x-role": "patient"})
 
     def test_valid_plan_is_derived_from_synthetic_prompt(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -379,6 +502,85 @@ class AuthorizationAgentTests(unittest.TestCase):
         self.assertTrue(
             is_json_validation_error(
                 MalformedToolCall("json_validate_failed: Failed to validate JSON")
+            )
+        )
+
+    def test_structural_coverage_requires_evidence_for_each_declared_test(self) -> None:
+        settings = SimpleNamespace(
+            groq_api_key="test-key",
+            gpt_oss_model="openai/gpt-oss-120b",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            with patch(
+                "medflow_redteam.authorization_agent.load_settings",
+                return_value=settings,
+            ):
+                agent = GenericAuthorizationAgent(
+                    prompt_document(run_dir / "scenario.txt"),
+                    EventLogger(run_dir),
+                )
+            agent.http_tool.declared_tests = {
+                "object_boundary": {
+                    "test_id": "object_boundary",
+                    "name": "Object boundary",
+                }
+            }
+            agent.http_tool.observations = [
+                {
+                    "action_id": "baseline",
+                    "test_id": "recon",
+                    "response": {"status": 200},
+                }
+            ]
+
+            gaps = agent.structural_coverage_gaps()
+
+        self.assertEqual(
+            gaps,
+            ["Declared test 'object_boundary' has no executed evidence."],
+        )
+
+    def test_discovery_scope_guard_prevents_false_secure_posture(self) -> None:
+        settings = SimpleNamespace(
+            groq_api_key="test-key",
+            qwen_model="qwen/qwen3.6-27b",
+        )
+        document = build_inline_prompt_document(
+            "Assess the authorized application.",
+            "https://demo.invalid/",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            with patch(
+                "medflow_redteam.authorization_agent.load_settings",
+                return_value=settings,
+            ):
+                agent = GenericAuthorizationAgent(
+                    document,
+                    EventLogger(run_dir),
+                    provider="qwen",
+                )
+            agent.http_tool.observations = [
+                {
+                    "response": {
+                        "status": 401,
+                    }
+                }
+            ]
+            guarded = agent.apply_discovery_scope_guard(
+                {
+                    "overall_security_posture": "secure",
+                    "executive_summary": "The tested request was denied.",
+                    "limitations": [],
+                }
+            )
+
+        self.assertEqual(guarded["overall_security_posture"], "inconclusive")
+        self.assertIn("authenticated context", guarded["limitations"][0])
+        self.assertTrue(
+            guarded["executive_summary"].startswith(
+                "Overall scope is inconclusive"
             )
         )
 

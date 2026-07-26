@@ -4,9 +4,11 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import schemathesis
+from pydantic import ValidationError
 
 from medflow_api.schemas import (
     CampaignRequest,
@@ -15,7 +17,13 @@ from medflow_api.schemas import (
     ToolsmithCreateRequest,
 )
 from medflow_graph.memory import GraphStore
-from medflow_redteam.campaign import http_ports_from_scan, http_ports_from_services, observation_status
+from medflow_redteam.campaign import (
+    campaign_agent_selected,
+    http_ports_from_scan,
+    http_ports_from_services,
+    observation_status,
+    plan_campaign_routing,
+)
 from medflow_redteam.capabilities import capability_match_score, select_capabilities_for_services
 from medflow_redteam.command_planner import (
     fallback_metasploit_resource,
@@ -36,6 +44,7 @@ from medflow_redteam.generated_tools import (
     validate_generated_tool_code,
     validate_generated_tool_result,
 )
+from medflow_redteam.evidence import normalize_authorization_evidence
 from medflow_redteam.identity import analyze_identity_logs
 from medflow_redteam.metasploit_runner import first_interesting_line, has_command_output_proof, payload_attempts
 from medflow_redteam.tools import normalize_validation_status, route_technology_signals, web_control_checks
@@ -90,11 +99,117 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertEqual(llm.model, "openai/gpt-oss-120b")
         self.assertEqual(llm.reasoning_effort, "medium")
         self.assertTrue(llm.hide_reasoning)
+        qwen = make_llm(
+            "qwen",
+            "test-key",
+            "llama-3.1-8b-instant",
+            "qwen/qwen3.6-27b",
+            "openai/gpt-oss-120b",
+        )
+        self.assertEqual(qwen.reasoning_effort, "none")
+        self.assertTrue(qwen.user_only)
         self.assertEqual(CampaignRequest(goal="authorized lab test").provider, "gpt_oss")
         self.assertFalse(CampaignRequest(goal="authorized lab test").stateful_api)
         self.assertEqual(ToolsmithCreateRequest(id="observer").provider, "gpt_oss")
         self.assertEqual(ToolQualityStateRequest(state="shadow", reason="fixture reviewed").state, "shadow")
         self.assertEqual(ToolQualityOutcomeRequest(outcome="tool_error").outcome, "tool_error")
+
+    def test_campaign_accepts_one_explicit_url_scope(self) -> None:
+        request = CampaignRequest(
+            goal="Assess the authorized web application.",
+            target_url="https://lab.example/app",
+            use_llm=True,
+        )
+        self.assertEqual(request.target_url, "https://lab.example/app")
+        with self.assertRaises(ValidationError):
+            CampaignRequest(
+                goal="Invalid mixed scope.",
+                target="127.0.0.1",
+                target_url="https://lab.example/",
+            )
+
+    def test_campaign_llm_routes_authorization_without_caller_agent_selection(self) -> None:
+        response = json.dumps(
+            {
+                "selected_agents": [
+                    "reconnaissance",
+                    "web_api_attack",
+                    "authorization_assessment",
+                    "reporting",
+                ],
+                "run_authorization_assessment": True,
+                "authorization_reason": "The broad web assessment includes access controls.",
+            }
+        )
+        state = {
+            "goal": "Run a broad authorized web/API security assessment.",
+            "target": None,
+            "target_url": "https://lab.example/",
+            "provider": "qwen",
+            "use_llm": True,
+        }
+        with patch(
+            "medflow_redteam.campaign.call_redteam_llm",
+            return_value=response,
+        ):
+            routing = plan_campaign_routing(state, SimpleNamespace())
+
+        self.assertTrue(routing["run_authorization_assessment"])
+        self.assertEqual(routing["generated_by"], "llm:qwen")
+        self.assertIn("authorization_assessment", routing["selected_agents"])
+        routed_state = {"campaign_routing": routing}
+        self.assertTrue(campaign_agent_selected(routed_state, "web_api_attack"))
+        self.assertFalse(campaign_agent_selected(routed_state, "identity_attack"))
+
+    def test_campaign_without_llm_does_not_launch_llm_subworkflow(self) -> None:
+        routing = plan_campaign_routing(
+            {
+                "goal": "Offline report.",
+                "target_url": "https://lab.example/",
+                "use_llm": False,
+            },
+            SimpleNamespace(),
+        )
+        self.assertFalse(routing["run_authorization_assessment"])
+        self.assertEqual(routing["generated_by"], "deterministic_fallback")
+
+        validation_routing = plan_campaign_routing(
+            {
+                "goal": "Offline network validation.",
+                "target": "127.0.0.1",
+                "execute_validation": True,
+                "use_llm": False,
+            },
+            SimpleNamespace(),
+        )
+        self.assertIn(
+            "capability_validation",
+            validation_routing["selected_agents"],
+        )
+
+    def test_authorization_findings_join_normalized_campaign_evidence(self) -> None:
+        evidence = normalize_authorization_evidence(
+            {
+                "findings": [
+                    {
+                        "title": "Object authorization failure",
+                        "severity": "high",
+                        "evidence_action_ids": ["object_read_other"],
+                        "classification": [
+                            {
+                                "cwe": "CWE-639",
+                                "owasp": "A01:2021",
+                            }
+                        ],
+                        "remediation": ["Enforce ownership checks."],
+                    }
+                ]
+            },
+            target_url="https://lab.example/",
+        )
+        self.assertEqual(evidence[0]["status"], "confirmed_vulnerability")
+        self.assertEqual(evidence[0]["asset"], "https://lab.example/")
+        self.assertIn("CWE-639", evidence[0]["references"])
 
     def test_validation_statuses_are_explicit(self) -> None:
         self.assertEqual(

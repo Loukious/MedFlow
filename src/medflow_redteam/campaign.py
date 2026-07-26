@@ -19,8 +19,18 @@ from medflow_ti.config import Settings, load_settings
 from medflow_ti.llm import LLMError, is_llm_api_error
 from medflow_graph.memory import GraphStore
 
+from .authorization_agent import (
+    build_inline_prompt_document,
+    run_inline_authorization_assessment,
+)
 from .command_planner import plan_recon_strategy, plan_validation_strategy
-from .evidence import normalize_validation_evidence, normalize_web_assessment_evidence, normalize_web_evidence, render_findings_table
+from .evidence import (
+    normalize_authorization_evidence,
+    normalize_validation_evidence,
+    normalize_web_assessment_evidence,
+    normalize_web_evidence,
+    render_findings_table,
+)
 from .tools import (
     ToolResult,
     default_ports_for_target,
@@ -54,6 +64,7 @@ class AgentOutput:
 class CampaignRun:
     goal: str
     target: str | None
+    target_url: str | None
     provider: str
     report: str
     steps: list[str]
@@ -72,6 +83,8 @@ class CampaignRun:
     validation_strategy: dict[str, Any] | None = None
     web_checks: dict[str, Any] | None = None
     web_assessment: dict[str, Any] | None = None
+    authorization_assessment: dict[str, Any] | None = None
+    campaign_routing: dict[str, Any] | None = None
     normalized_evidence: list[dict[str, Any]] = field(default_factory=list)
     loop_summary: dict[str, Any] | None = None
     phases: list[dict[str, Any]] = field(default_factory=list)
@@ -84,6 +97,7 @@ class CampaignRun:
 class CampaignState(TypedDict, total=False):
     goal: str
     target: str | None
+    target_url: str | None
     provider: str
     execute_recon: bool
     execute_validation: bool
@@ -95,6 +109,9 @@ class CampaignState(TypedDict, total=False):
     stateful_api: bool
     stateful_max_requests: int
     stateful_max_workflows: int
+    authorization_output_root: Path
+    authorization_request_budget: int
+    authorization_tool_rounds: int
     ports: list[int]
     tcp: dict[str, Any]
     nmap_result: ToolResult
@@ -109,6 +126,8 @@ class CampaignState(TypedDict, total=False):
     validation_strategy: dict[str, Any]
     web_checks: dict[str, Any]
     web_assessment: dict[str, Any]
+    authorization_assessment: dict[str, Any]
+    campaign_routing: dict[str, Any]
     normalized_evidence: list[dict[str, Any]]
     loop_summary: dict[str, Any]
     phases: list[dict[str, Any]]
@@ -277,6 +296,9 @@ You are the {role} in an authorized MedFlow red-team campaign planning graph.
 High-level campaign goal:
 {state["goal"]}
 
+Explicit web target URL:
+{state.get("target_url") or "none"}
+
 Observed services:
 {compact_services(state.get("services", []))}
 
@@ -374,6 +396,13 @@ def compact_agents_for_prompt(agents: list[dict[str, Any]]) -> list[dict[str, An
     return compacted
 
 
+def campaign_agent_selected(state: CampaignState, agent_name: str) -> bool:
+    selected = (state.get("campaign_routing") or {}).get("selected_agents")
+    if not selected:
+        return True
+    return agent_name in {str(item) for item in selected}
+
+
 def summarize_evidence_for_prompt(evidence: dict[str, Any]) -> dict[str, Any]:
     services = evidence.get("services") or []
     tcp = evidence.get("tcp") or {}
@@ -401,12 +430,18 @@ def compact_reporting_draft(state: CampaignState) -> dict[str, Any]:
     return {
         "goal": state["goal"],
         "target": state.get("target"),
+        "target_url": state.get("target_url"),
+        "campaign_routing": truncate_value(state.get("campaign_routing", {}), 700),
         "services": state.get("services", [])[:20],
         "web_routes_observed": [item for item in routes if item.get("status")][:12],
         "web_artifact_signals": [item for item in routes if item.get("artifact_signal")][:12],
         "web_fingerprints": [item for item in fingerprints if item.get("status")][:8],
         "web_checks": truncate_value(state.get("web_checks", {}), 700),
         "web_assessment": truncate_value(state.get("web_assessment", {}), 900),
+        "authorization_assessment": truncate_value(
+            state.get("authorization_assessment", {}),
+            1_200,
+        ),
         "graph_memory_hits": [
             {
                 "type": hit.get("type"),
@@ -462,6 +497,160 @@ def apply_validation_strategy(selection: dict[str, Any], strategy: dict[str, Any
     return updated
 
 
+def plan_campaign_routing(
+    state: CampaignState,
+    settings: Settings,
+) -> dict[str, Any]:
+    fallback_agents = [
+        "reconnaissance",
+        "identity_attack",
+        "web_api_attack",
+        "blockchain_security",
+        "reporting",
+    ]
+    if state.get("execute_validation"):
+        fallback_agents.append("capability_validation")
+    if state.get("target_url") and state.get("use_llm", True):
+        fallback_agents.append("authorization_assessment")
+    fallback = {
+        "selected_agents": fallback_agents,
+        "run_authorization_assessment": bool(
+            state.get("target_url") and state.get("use_llm", True)
+        ),
+        "authorization_reason": (
+            "Fallback routing selected bounded web authorization analysis for the explicit URL."
+            if state.get("target_url") and state.get("use_llm", True)
+            else "No LLM-backed URL authorization workflow is available for this run."
+        ),
+        "generated_by": "deterministic_fallback",
+    }
+    if not state.get("use_llm", True):
+        return fallback
+
+    prompt = f"""
+You are routing an authorized red-team campaign to internal specialist agents. The caller must not
+select specialists manually.
+
+Campaign objective:
+{state["goal"]}
+
+Explicit network target:
+{state.get("target") or "none"}
+
+Explicit web target URL:
+{state.get("target_url") or "none"}
+
+Available specialists:
+- reconnaissance: attack-surface and service discovery
+- capability_validation: service-specific validation
+- identity_attack: directory, authentication, MFA, and identity paths
+- web_api_attack: routes, inputs, API behavior, and application vulnerabilities
+- authorization_assessment: bounded same-origin object-level, function-level, role, tenant, and
+  session-boundary testing driven by an LLM HTTP planner
+- blockchain_security: smart contracts, wallets, and chain-specific controls
+- reporting: evidence synthesis
+
+Select specialists from the objective and target type. Select authorization_assessment when the
+objective requests or reasonably includes access-control testing and the explicit URL permits
+same-origin HTTP evidence collection. Do not select it for a network-only target or a goal that
+clearly excludes web authorization. A broad web/API security assessment may include it.
+
+Return only one JSON object:
+{{
+  "selected_agents": ["reconnaissance", "web_api_attack", "reporting"],
+  "run_authorization_assessment": true,
+  "authorization_reason": "one concise evidence-based routing reason"
+}}
+""".strip()
+    try:
+        raw = call_redteam_llm(
+            prompt,
+            settings=settings,
+            provider=state.get("provider", "gpt_oss"),
+        )
+        parsed = parse_json_object(raw)
+        allowed_agents = {
+            "reconnaissance",
+            "capability_validation",
+            "identity_attack",
+            "web_api_attack",
+            "authorization_assessment",
+            "blockchain_security",
+            "reporting",
+        }
+        selected_agents = [
+            str(item)
+            for item in parsed.get("selected_agents") or []
+            if str(item) in allowed_agents
+        ]
+        run_authorization = parsed.get("run_authorization_assessment")
+        if not isinstance(run_authorization, bool):
+            raise ValueError("Routing response omitted a boolean authorization decision.")
+        if run_authorization and not state.get("target_url"):
+            raise ValueError("Authorization assessment requires an explicit target URL.")
+        if run_authorization:
+            for required in ("web_api_attack", "authorization_assessment"):
+                if required not in selected_agents:
+                    selected_agents.append(required)
+        if state.get("execute_recon") and "reconnaissance" not in selected_agents:
+            selected_agents.append("reconnaissance")
+        if (
+            state.get("execute_validation")
+            and "capability_validation" not in selected_agents
+        ):
+            selected_agents.append("capability_validation")
+        if "reporting" not in selected_agents:
+            selected_agents.append("reporting")
+        return {
+            "selected_agents": selected_agents,
+            "run_authorization_assessment": run_authorization,
+            "authorization_reason": str(
+                parsed.get("authorization_reason") or "No routing reason supplied."
+            )[:1_000],
+            "generated_by": f"llm:{state.get('provider', 'gpt_oss')}",
+        }
+    except Exception as exc:
+        if not is_llm_api_error(exc) and not isinstance(
+            exc,
+            (LLMError, RuntimeError, ValueError, json.JSONDecodeError),
+        ):
+            raise
+        return {
+            **fallback,
+            "fallback_error": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def compact_authorization_assessment(run: Any, provider: str) -> dict[str, Any]:
+    assessment = run.assessment
+    return {
+        "status": "completed",
+        "provider": provider,
+        "overall_security_posture": assessment.get("overall_security_posture"),
+        "test_summary": assessment.get("test_summary", ""),
+        "tests": [
+            {
+                "test_id": item.get("test_id"),
+                "name": item.get("name"),
+                "result": item.get("result"),
+                "summary": item.get("summary"),
+                "action_ids": item.get("action_ids", []),
+            }
+            for item in assessment.get("tests", [])
+        ],
+        "findings": assessment.get("findings", []),
+        "limitations": assessment.get("limitations", []),
+        "http_requests": len(run.observations),
+        "artifacts": {
+            "run_dir": str(run.run_dir),
+            "report": str(run.report_path),
+            "assessment": str(run.assessment_path),
+            "evidence": str(run.evidence_path),
+            "execution_log": str(run.execution_log_path),
+        },
+    }
+
+
 def build_campaign_graph(
     settings: Settings,
     provider: str = "gpt_oss",
@@ -482,6 +671,7 @@ def build_campaign_graph(
         }
 
     def campaign_orchestrator(state: CampaignState) -> CampaignState:
+        routing = plan_campaign_routing(state, settings)
         fallback = fallback_agent_output(
             "Campaign Orchestrator Agent",
             state["goal"],
@@ -502,19 +692,56 @@ def build_campaign_graph(
             state,
             settings,
             "Campaign Orchestrator Agent",
-            """
+            f"""
 Create the overall campaign charter. Define phases, role tasking, constraints, decision points,
 and success criteria. Do not provide exploit instructions.
+
+Internal specialist routing decision:
+{json.dumps(routing, indent=2)}
 """,
             fallback,
         )
+        output["evidence"] = {"campaign_routing": routing}
         return {
+            "campaign_routing": routing,
             "agents": [*state.get("agents", []), output],
             "steps": append_step(state, "campaign orchestrator created the campaign charter"),
-            "tool_traces": [*state.get("tool_traces", []), make_trace("campaign_orchestrator", state["goal"], json.dumps(output, indent=2))],
+            "tool_traces": [
+                *state.get("tool_traces", []),
+                make_trace(
+                    "campaign_specialist_router",
+                    state["goal"],
+                    json.dumps(routing, indent=2),
+                ),
+                make_trace(
+                    "campaign_orchestrator",
+                    state["goal"],
+                    json.dumps(output, indent=2),
+                ),
+            ],
+            "tool_timeline": append_timeline(
+                state,
+                "campaign_specialist_router",
+                state["goal"],
+                routing.get("generated_by", "unknown"),
+                json.dumps(routing, indent=2),
+            ),
         }
 
     def reconnaissance_agent(state: CampaignState) -> CampaignState:
+        if not campaign_agent_selected(state, "reconnaissance"):
+            return {
+                "steps": append_step(
+                    state,
+                    "campaign router skipped the reconnaissance agent",
+                ),
+                "phases": append_phase(
+                    state,
+                    "reconnaissance",
+                    "not_applicable",
+                    "Not selected by the Campaign Orchestrator.",
+                ),
+            }
         tcp = state.get("tcp")
         services = state.get("services", [])
         http = state.get("http")
@@ -703,6 +930,19 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
         }
 
     def capability_validation_agent(state: CampaignState) -> CampaignState:
+        if not campaign_agent_selected(state, "capability_validation"):
+            return {
+                "steps": append_step(
+                    state,
+                    "campaign router skipped the capability validation agent",
+                ),
+                "phases": append_phase(
+                    state,
+                    "validation execution",
+                    "not_applicable",
+                    "Not selected by the Campaign Orchestrator.",
+                ),
+            }
         if not state.get("execute_validation", False):
             return {
                 "steps": append_step(state, "skipped capability validation execution"),
@@ -818,6 +1058,13 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
         }
 
     def identity_attack_agent(state: CampaignState) -> CampaignState:
+        if not campaign_agent_selected(state, "identity_attack"):
+            return {
+                "steps": append_step(
+                    state,
+                    "campaign router skipped the identity attack agent",
+                )
+            }
         fallback = fallback_agent_output(
             "Identity Attack Agent",
             state["goal"],
@@ -848,6 +1095,126 @@ Focus on AD relationships, risky paths, MFA fatigue, device registration, and de
         }
 
     def web_api_attack_agent(state: CampaignState) -> CampaignState:
+        if not (
+            campaign_agent_selected(state, "web_api_attack")
+            or campaign_agent_selected(state, "authorization_assessment")
+        ):
+            return {
+                "steps": append_step(
+                    state,
+                    "campaign router skipped the web/API attack agent",
+                ),
+                "authorization_assessment": {
+                    "status": "not_selected",
+                    "routing_reason": (
+                        state.get("campaign_routing") or {}
+                    ).get("authorization_reason", ""),
+                },
+            }
+        routing = state.get("campaign_routing") or {}
+        authorization_assessment: dict[str, Any] = {}
+        traces = list(state.get("tool_traces", []))
+        timeline = list(state.get("tool_timeline", []))
+        steps = list(state.get("steps", []))
+        phases = list(state.get("phases", []))
+        if routing.get("run_authorization_assessment") and state.get("target_url"):
+            try:
+                authorization_run = run_inline_authorization_assessment(
+                    state["goal"],
+                    str(state["target_url"]),
+                    output_root=state.get(
+                        "authorization_output_root",
+                        Path("reports/redteam_campaign/authorization"),
+                    ),
+                    request_budget=state.get("authorization_request_budget", 30),
+                    max_tool_rounds=state.get("authorization_tool_rounds", 3),
+                    provider=state.get("provider", "gpt_oss"),
+                    allow_mutating_methods=(
+                        state.get("execution_mode", "safe") == "aggressive_lab"
+                    ),
+                )
+                authorization_assessment = compact_authorization_assessment(
+                    authorization_run,
+                    state.get("provider", "gpt_oss"),
+                )
+                posture = str(
+                    authorization_assessment.get("overall_security_posture")
+                    or "unknown"
+                )
+                authorization_status = {
+                    "vulnerable": "confirmed_exposure",
+                    "secure": "success",
+                    "inconclusive": "inconclusive",
+                }.get(posture, "ran_no_finding")
+                timeline.append(
+                    {
+                        "tool": "autonomous_authorization_subworkflow",
+                        "input": str(state["target_url"]),
+                        "status": authorization_status,
+                        "evidence": json.dumps(
+                            {
+                                "posture": posture,
+                                "tests": authorization_assessment.get("tests", []),
+                                "http_requests": authorization_assessment.get(
+                                    "http_requests", 0
+                                ),
+                                "artifacts": authorization_assessment.get(
+                                    "artifacts", {}
+                                ),
+                            },
+                            indent=2,
+                        )[:1_200],
+                    }
+                )
+                phases = append_phase(
+                    {**state, "phases": phases},
+                    "authorization assessment",
+                    authorization_status,
+                    (
+                        f"Internal Web/API subworkflow made "
+                        f"{authorization_assessment.get('http_requests', 0)} bounded HTTP "
+                        f"request(s); posture={posture}."
+                    ),
+                )
+                steps.append(
+                    "web/API agent completed the routed autonomous authorization subworkflow"
+                )
+                traces.append(
+                    make_trace(
+                        "autonomous_authorization_subworkflow",
+                        str(state["target_url"]),
+                        json.dumps(authorization_assessment, indent=2),
+                    )
+                )
+            except Exception as exc:
+                authorization_assessment = {
+                    "status": "tool_error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "routing_reason": routing.get("authorization_reason", ""),
+                }
+                timeline.append(
+                    {
+                        "tool": "autonomous_authorization_subworkflow",
+                        "input": str(state["target_url"]),
+                        "status": "tool_error",
+                        "evidence": authorization_assessment["error"][:1_200],
+                    }
+                )
+                phases = append_phase(
+                    {**state, "phases": phases},
+                    "authorization assessment",
+                    "tool_error",
+                    authorization_assessment["error"],
+                )
+                steps.append(
+                    "web/API agent recorded an authorization subworkflow error"
+                )
+        elif state.get("target_url"):
+            authorization_assessment = {
+                "status": "not_selected",
+                "routing_reason": routing.get("authorization_reason", ""),
+            }
+
         fallback = fallback_agent_output(
             "Web/API Attack Agent",
             state["goal"],
@@ -861,23 +1228,50 @@ Focus on AD relationships, risky paths, MFA fatigue, device registration, and de
             "Reporting Agent should map web/API checks to findings, controls, and limitations.",
         )
         output = call_role_llm(
-            state,
+            {**state, "authorization_assessment": authorization_assessment},
             settings,
             "Web/API Attack Agent",
-            """
+            f"""
 Act as a separate web and API attack agent. Use Burp Suite, OWASP ZAP, and Postman as tool families.
 Focus on endpoint discovery, authorization control validation, business logic abuse hypotheses,
 logging expectations, and safe test data.
+
+Internally routed authorization evidence:
+{json.dumps(authorization_assessment, indent=2)[:6_000]}
 """,
             fallback,
         )
+        output["evidence"] = {
+            "campaign_routing": routing,
+            "authorization_assessment": authorization_assessment,
+        }
         return {
+            "authorization_assessment": authorization_assessment,
             "agents": [*state.get("agents", []), output],
-            "steps": append_step(state, "web/API attack agent produced portal and API validation path"),
-            "tool_traces": [*state.get("tool_traces", []), make_trace("web_api_attack_agent", state["goal"], json.dumps(output, indent=2))],
+            "steps": [
+                *steps,
+                "web/API attack agent produced portal and API validation path",
+            ],
+            "phases": phases,
+            "tool_traces": [
+                *traces,
+                make_trace(
+                    "web_api_attack_agent",
+                    state["goal"],
+                    json.dumps(output, indent=2),
+                ),
+            ],
+            "tool_timeline": timeline,
         }
 
     def blockchain_security_agent(state: CampaignState) -> CampaignState:
+        if not campaign_agent_selected(state, "blockchain_security"):
+            return {
+                "steps": append_step(
+                    state,
+                    "campaign router skipped the blockchain security agent",
+                )
+            }
         goal_text = state["goal"].lower()
         blockchain_in_scope = any(term in goal_text for term in ["blockchain", "smart contract", "wallet", "token", "chain"])
         fallback = fallback_agent_output(
@@ -995,7 +1389,9 @@ def deterministic_campaign_report(state: CampaignState, safety_review: str) -> s
         "# MedFlow Multi-Agent Red-Team Campaign",
         "",
         f"Goal: {state['goal']}",
-        f"Target: {state.get('target') or 'tabletop / no live target'}",
+        (
+            f"Target: {state.get('target_url') or state.get('target') or 'tabletop / no live target'}"
+        ),
         "",
         "## Multi-Agent Workflow",
     ]
@@ -1032,6 +1428,21 @@ def deterministic_campaign_report(state: CampaignState, safety_review: str) -> s
         lines.extend(["", "## Tool Timeline"])
         for item in state.get("tool_timeline", [])[:30]:
             lines.append(f"- {item.get('tool')}: {item.get('status')} - {item.get('evidence', '')[:180]}")
+    authorization = state.get("authorization_assessment") or {}
+    if authorization:
+        lines.extend(
+            [
+                "",
+                "## Authorization Assessment",
+                f"- Status: {authorization.get('status', 'unknown')}",
+                f"- Posture: {authorization.get('overall_security_posture', 'not assessed')}",
+                f"- HTTP requests: {authorization.get('http_requests', 0)}",
+                *[
+                    f"- {item.get('name')}: {item.get('result')} - {item.get('summary', '')}"
+                    for item in authorization.get("tests", [])
+                ],
+            ]
+        )
     evidence = state.get("normalized_evidence", [])
     if evidence:
         lines.extend(["", "## Normalized Findings", render_findings_table(evidence)])
@@ -1071,14 +1482,27 @@ def run_campaign(
     stateful_api: bool = False,
     stateful_max_requests: int = 40,
     stateful_max_workflows: int = 8,
+    target_url: str | None = None,
+    authorization_output_root: Path | None = None,
+    authorization_request_budget: int = 30,
+    authorization_tool_rounds: int = 3,
 ) -> CampaignRun:
     started = time.perf_counter()
     settings = load_settings()
+    if target and target_url:
+        raise ValueError("Supply either a network target or an HTTP(S) target URL, not both.")
     if target:
         target = validate_target(target)
+    if target_url:
+        target_url = target_url.strip()
+        if not target_url:
+            target_url = None
+        else:
+            build_inline_prompt_document(goal, target_url)
     initial: CampaignState = {
         "goal": goal,
         "target": target,
+        "target_url": target_url,
         "provider": provider,
         "execute_recon": execute_recon or execute_validation,
         "execute_validation": execute_validation,
@@ -1090,6 +1514,12 @@ def run_campaign(
         "stateful_api": stateful_api,
         "stateful_max_requests": max(1, min(stateful_max_requests, 200)),
         "stateful_max_workflows": max(1, min(stateful_max_workflows, 30)),
+        "authorization_output_root": authorization_output_root
+        or Path("reports/redteam_campaign/authorization"),
+        "authorization_request_budget": max(
+            1, min(authorization_request_budget, 50)
+        ),
+        "authorization_tool_rounds": max(1, min(authorization_tool_rounds, 5)),
         "ports": ports or (default_ports_for_target(target) if target else []),
         "steps": [],
         "phases": [],
@@ -1102,6 +1532,8 @@ def run_campaign(
         "validation_strategy": {},
         "web_checks": {},
         "web_assessment": {},
+        "authorization_assessment": {},
+        "campaign_routing": {},
         "normalized_evidence": [],
         "loop_summary": {},
     }
@@ -1119,6 +1551,10 @@ def run_campaign(
         final_state["normalized_evidence"] = [
             *normalize_web_evidence(final_state.get("web_checks")),
             *normalize_web_assessment_evidence(final_state.get("web_assessment")),
+            *normalize_authorization_evidence(
+                final_state.get("authorization_assessment"),
+                target_url=target_url,
+            ),
             *normalize_validation_evidence(final_state.get("capability_validation")),
         ]
         if final_state.get("normalized_evidence"):
@@ -1127,6 +1563,7 @@ def run_campaign(
         return CampaignRun(
             goal=goal,
             target=target,
+            target_url=target_url,
             provider=provider,
             report=final_state.get("report", ""),
             steps=final_state.get("steps", []),
@@ -1139,6 +1576,10 @@ def run_campaign(
             web_fingerprint=final_state.get("web_fingerprint"),
             web_routes=final_state.get("web_routes"),
             web_assessment=final_state.get("web_assessment"),
+            authorization_assessment=final_state.get(
+                "authorization_assessment"
+            ),
+            campaign_routing=final_state.get("campaign_routing"),
             capability_selection=final_state.get("capability_selection"),
             capability_validation=final_state.get("capability_validation"),
             graph_memory=final_state.get("graph_memory"),
@@ -1157,6 +1598,7 @@ def run_campaign(
         return CampaignRun(
             goal=goal,
             target=target,
+            target_url=target_url,
             provider=provider,
             report="",
             steps=initial["steps"],
@@ -1168,6 +1610,8 @@ def run_campaign(
             graph_memory={},
             web_checks={},
             web_assessment={},
+            authorization_assessment={},
+            campaign_routing=initial.get("campaign_routing"),
             normalized_evidence=[],
             loop_summary={},
             elapsed_seconds=elapsed,
@@ -1330,12 +1774,20 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         "# MedFlow Red-Team Campaign Run",
         "",
         f"- Goal: {payload.get('goal')}",
-        f"- Target: {payload.get('target') or 'tabletop / no live target'}",
+        (
+            f"- Target: {payload.get('target_url') or payload.get('target') or 'tabletop / no live target'}"
+        ),
         f"- Provider: {payload.get('provider')}",
         f"- Elapsed seconds: {payload.get('elapsed_seconds'):.2f}",
         "",
         "## Capability Validation",
         json.dumps(payload.get("capability_validation") or {"status": "not run"}, indent=2),
+        "",
+        "## Campaign Routing",
+        json.dumps(payload.get("campaign_routing") or {"status": "not run"}, indent=2),
+        "",
+        "## Authorization Assessment",
+        json.dumps(payload.get("authorization_assessment") or {"status": "not run"}, indent=2),
         "",
         "## Recon Strategy",
         json.dumps(payload.get("recon_strategy") or {"status": "not run"}, indent=2),

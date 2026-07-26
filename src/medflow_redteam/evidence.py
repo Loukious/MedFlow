@@ -76,6 +76,43 @@ def normalize_web_assessment_evidence(web_assessment: dict[str, Any] | None) -> 
     return evidence
 
 
+def normalize_authorization_evidence(
+    authorization_assessment: dict[str, Any] | None,
+    *,
+    target_url: str | None,
+) -> list[dict[str, Any]]:
+    assessment = authorization_assessment or {}
+    evidence = []
+    for finding in assessment.get("findings", []):
+        classifications = finding.get("classification") or []
+        references = []
+        for item in classifications:
+            if not isinstance(item, dict):
+                continue
+            references.extend(
+                value
+                for value in [item.get("cwe"), item.get("owasp")]
+                if value
+            )
+        evidence.append(
+            {
+                "type": "authorization_assessment",
+                "title": finding.get("title") or "Authorization control failure",
+                "asset": target_url or "",
+                "status": "confirmed_vulnerability",
+                "severity": finding.get("severity", "high"),
+                "confidence": "high",
+                "proof_kind": "bounded_http_differential",
+                "safe_summary": (
+                    f"Evidence actions: {', '.join(finding.get('evidence_action_ids') or [])}"
+                )[:900],
+                "remediation": " ".join(finding.get("remediation") or [])[:1_200],
+                "references": list(dict.fromkeys(references)),
+            }
+        )
+    return evidence
+
+
 def remediation_for_web_finding(finding: dict[str, Any]) -> str:
     finding_type = str(finding.get("type", "")).lower()
     if "sqli" in finding_type:

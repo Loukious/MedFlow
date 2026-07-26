@@ -19,7 +19,7 @@ class Settings:
     embedding_model: str = "BAAI/bge-base-en-v1.5"
     gpt_oss_model: str = "openai/gpt-oss-120b"
     llama_model: str = "llama-3.1-8b-instant"
-    qwen_model: str = "qwen/qwen3-32b"
+    qwen_model: str = "qwen/qwen3.6-27b"
     groq_api_key: str | None = None
 
 
@@ -34,5 +34,5 @@ def load_settings() -> Settings:
         groq_api_key=groq_key,
         gpt_oss_model=os.getenv("GPT_OSS_MODEL", "openai/gpt-oss-120b"),
         llama_model=os.getenv("LLAMA_MODEL", "llama-3.1-8b-instant"),
-        qwen_model=os.getenv("QWEN_MODEL", "qwen/qwen3-32b"),
+        qwen_model=os.getenv("QWEN_MODEL", "qwen/qwen3.6-27b"),
     )

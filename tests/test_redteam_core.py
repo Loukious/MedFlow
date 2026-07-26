@@ -84,7 +84,7 @@ class RedTeamCoreTests(unittest.TestCase):
             "gpt_oss",
             "test-key",
             "llama-3.1-8b-instant",
-            "qwen/qwen3-32b",
+            "qwen/qwen3.6-27b",
             "openai/gpt-oss-120b",
         )
         self.assertEqual(llm.model, "openai/gpt-oss-120b")

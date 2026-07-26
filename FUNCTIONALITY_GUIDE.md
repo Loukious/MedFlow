@@ -145,7 +145,7 @@ How it works:
 - The selected model writes the final answer using only that retrieved context.
 - GPT-OSS defaults to GPT-OSS 120B using model ID `openai/gpt-oss-120b`, medium reasoning effort, and hidden reasoning output.
 - Llama defaults to Llama 3.1 8B using model ID `llama-3.1-8b-instant`.
-- Qwen defaults to Qwen 3 32B using model ID `qwen/qwen3-32b`.
+- Qwen defaults to Qwen 3.6 27B using model ID `qwen/qwen3.6-27b`.
 - Model IDs can be overridden with `GPT_OSS_MODEL`, `LLAMA_MODEL`, and `QWEN_MODEL`.
 - Qwen uses a smaller context budget to stay friendlier to free-tier token limits.
 - If the selected LLM is quota-limited or unavailable, the app returns retrieved MITRE evidence instead of crashing.

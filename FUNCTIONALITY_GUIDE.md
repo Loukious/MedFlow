@@ -881,22 +881,33 @@ variations, response interpretation, verdicts, and reporting to the LLM. For exa
 Public assignment targets can use the bounded authorization subworkflow. Active wordlist and spray
 execution remains private-lab-only.
 
-To reproduce the isolated Juice Shop benchmark, start the internal lab, enter only its network
-namespace, run the fixture, and stop it:
+For the autonomous campaign example, use the managed identity fixture. Its container stays on an
+internal Docker network with no internet route. A pair of managed `socat` relays exposes only the
+application on host loopback, and `up` creates the three disposable synthetic accounts expected by
+the example prompt:
 
 ```bash
-sudo .venv/bin/python scripts/manage_web_training_labs.py up juice_shop --use-sudo
-LAB_PID=$(sudo docker inspect -f '{{.State.Pid}}' medflow-training-juice-shop)
-LAB_IP=$(sudo docker inspect -f \
-  '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
-  medflow-training-juice-shop)
-sudo nsenter -t "$LAB_PID" -n .venv/bin/python \
-  scripts/benchmark_identity_attack_agents.py --url "http://${LAB_IP}:3000/"
-sudo .venv/bin/python scripts/manage_web_training_labs.py down juice_shop --use-sudo
+sudo .venv/bin/python scripts/manage_identity_training_lab.py up
+
+.venv/bin/python scripts/run_redteam_campaign.py \
+  "Run an authorized wordlist attack and password spray against this isolated lab using the synthetic identity root@medflow-agent.test" \
+  --url http://127.0.0.1:3000/ \
+  --execution-mode aggressive_lab \
+  --provider local_qwen \
+  --report --traces
+
+sudo .venv/bin/python scripts/manage_identity_training_lab.py down
 ```
 
-The benchmark-specific seeding code creates disposable synthetic accounts from the first three
-username entries and the second password entry. The two production agents remain generic and have
-no Juice Shop-specific credential logic. The expected evidence shows the Wordlist Agent advancing
-password positions for one username, while the Spray Agent advances usernames before moving to the
-next password.
+Use `status` to inspect the container and both relays. Runtime PID state and relay logs are stored
+under ignored `data/labs/runtime/identity_training_lab`.
+
+```bash
+sudo .venv/bin/python scripts/manage_identity_training_lab.py status
+```
+
+The fixture-specific manager creates disposable synthetic accounts from the first three username
+entries and the second password entry. The production discovery and credential agents remain
+generic and contain no Juice Shop-specific endpoint or credential logic. The expected evidence
+shows the Wordlist Agent advancing password positions for one username, while the Spray Agent
+advances usernames before moving to the next password.

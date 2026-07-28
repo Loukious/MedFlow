@@ -513,10 +513,6 @@ def append_identity_validation(
                         f"{integer(result.get('password_candidates_loaded'))} loaded; "
                         f"{integer(result.get('password_candidates_attempted'))} reached"
                     ),
-                    (
-                        "- **Username template:** "
-                        f"{code(result.get('username_template') or 'not recorded')}"
-                    ),
                 ]
             )
             username_sources = dict_items(result.get("username_wordlists"))

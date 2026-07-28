@@ -5,9 +5,7 @@ import json
 import time
 from pathlib import Path
 
-import httpx
-
-from medflow_redteam.lab_http import load_wordlist, same_origin_url, validate_lab_url
+from medflow_redteam.lab_http import load_wordlist, validate_lab_url
 from medflow_redteam.password_spray_agent import (
     DEFAULT_PASSWORD_WORDLISTS,
     DEFAULT_USERNAME_WORDLISTS,
@@ -20,57 +18,11 @@ from medflow_redteam.wordlist_attack_agent import (
     WordlistAttackConfig,
 )
 
-
-def seed_juice_shop_fixture(
-    target_url: str,
-    *,
-    usernames: list[str],
-    fixture_password: str,
-) -> list[dict[str, str | int]]:
-    """Create disposable synthetic accounts for this benchmark only."""
-    registration_url = same_origin_url(target_url, "/api/Users")
-    login_url = same_origin_url(target_url, "/rest/user/login")
-    results = []
-    with httpx.Client(timeout=5, follow_redirects=False) as client:
-        for username in usernames:
-            identity = f"{username}@medflow-agent.test"
-            response = client.post(
-                registration_url,
-                json={
-                    "email": identity,
-                    "password": fixture_password,
-                    "passwordRepeat": fixture_password,
-                },
-            )
-            if response.status_code == 201:
-                status = "created"
-            else:
-                login = client.post(
-                    login_url,
-                    json={"email": identity, "password": fixture_password},
-                )
-                if login.status_code != 200:
-                    raise RuntimeError(
-                        f"Could not create or verify synthetic account {identity}: "
-                        f"registration={response.status_code}, login={login.status_code}"
-                    )
-                status = "existing_verified"
-            results.append(
-                {
-                    "identity": identity,
-                    "status": status,
-                    "registration_status": response.status_code,
-                }
-            )
-    return results
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Run the two generic identity agents against a disposable OWASP Juice Shop "
-            "fixture. Execute this inside the lab network namespace when the Docker "
-            "network is internal."
+            "Run the two generic identity agents against the loopback-only "
+            "username/password training fixture."
         )
     )
     parser.add_argument("--url", default="http://172.19.0.2:3000/")
@@ -78,31 +30,26 @@ def main() -> None:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("reports/identity_agent_benchmark"),
+        default=Path("reports/plain_identity_agent_benchmark"),
     )
     args = parser.parse_args()
     target_url = validate_lab_url(args.url)
-    usernames, _ = load_wordlist(DEFAULT_USERNAME_WORDLISTS, limit=3)
+    usernames, _ = load_wordlist(DEFAULT_USERNAME_WORDLISTS, limit=4)
     passwords, _ = load_wordlist(DEFAULT_PASSWORD_WORDLISTS, limit=2)
-    if len(usernames) < 3 or len(passwords) < 2:
+    if len(usernames) < 4 or len(passwords) < 2:
         raise RuntimeError("Downloaded SecLists subset is incomplete.")
 
     stamp = time.strftime("%Y%m%d-%H%M%S")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    seeded = seed_juice_shop_fixture(
-        target_url,
-        usernames=usernames,
-        fixture_password=passwords[1],
-    )
     wordlist = WordlistAttackAgent(
         WordlistAttackConfig(
             target_url=target_url,
-            endpoint="/rest/user/login",
-            username=f"{usernames[0]}@medflow-agent.test",
+            endpoint="/login",
+            username=usernames[2],
             password_wordlist_paths=list(DEFAULT_WORDLIST_PASSWORD_WORDLISTS),
-            username_field="email",
+            username_field="username",
             password_field="password",
-            success_json_paths=("authentication.token",),
+            success_json_paths=("authentication.accepted",),
             max_passwords=args.max_wordlist_passwords,
             max_attempts=args.max_wordlist_passwords,
             delay_seconds=0.1,
@@ -116,16 +63,15 @@ def main() -> None:
     spray = PasswordSprayAgent(
         PasswordSprayConfig(
             target_url=target_url,
-            endpoint="/rest/user/login",
+            endpoint="/login",
             username_wordlist_paths=list(DEFAULT_USERNAME_WORDLISTS),
             password_wordlist_paths=list(DEFAULT_PASSWORD_WORDLISTS),
-            username_template="{username}@medflow-agent.test",
-            username_field="email",
+            username_field="username",
             password_field="password",
-            success_json_paths=("authentication.token",),
-            max_users=3,
+            success_json_paths=("authentication.accepted",),
+            max_users=4,
             max_passwords=2,
-            max_attempts=6,
+            max_attempts=8,
             delay_seconds=0.1,
             timeout_seconds=10,
             execution_mode="aggressive_lab",
@@ -134,9 +80,9 @@ def main() -> None:
         )
     ).run()
     payload = {
-        "lab": "OWASP Juice Shop",
+        "lab": "MedFlow loopback identity fixture",
         "target_url": target_url,
-        "synthetic_accounts": seeded,
+        "synthetic_accounts": usernames[1:4],
         "wordlist_attack": wordlist,
         "password_spray": spray,
         "passed": wordlist["successful"] > 0 and spray["successful"] > 0,

@@ -47,7 +47,6 @@ class AuthenticationContract:
     failure_statuses: tuple[int, ...] = (400, 401, 403)
     success_json_paths: tuple[str, ...] = ()
     wordlist_identity: str = ""
-    username_template: str = "{username}"
 
 
 @dataclass(frozen=True)
@@ -76,7 +75,6 @@ class AuthenticationDiscovery:
                 "wordlist_identity_supplied": bool(
                     self.contract.wordlist_identity
                 ),
-                "username_template": self.contract.username_template,
             }
         return {
             "status": self.status,
@@ -526,14 +524,6 @@ def validate_contract_proposal(
         missing.append(
             "A wordlist attack requires one explicitly authorized identity in the campaign prompt."
         )
-    username_template = derive_username_template(identity)
-    proposed_template = str(proposal.get("username_template") or "").strip()
-    if (
-        not identity
-        and template_supported(proposed_template, support_text)
-    ):
-        username_template = proposed_template
-
     core_missing = any(
         item
         for item in missing
@@ -553,7 +543,6 @@ def validate_contract_proposal(
             failure_statuses=failure_statuses,
             success_json_paths=success_json_paths,
             wordlist_identity=identity,
-            username_template=username_template,
         ),
         missing,
     )
@@ -651,24 +640,6 @@ def safe_string_list(value: Any, *, limit: int) -> list[str]:
         for item in (str(raw or "").strip() for raw in value[:limit])
         if re.fullmatch(r"[A-Za-z0-9_.-]{1,160}", item)
     ]
-
-
-def derive_username_template(identity: str) -> str:
-    if "@" not in identity:
-        return "{username}"
-    _, domain = identity.rsplit("@", 1)
-    if not domain:
-        return "{username}"
-    return f"{{username}}@{domain}"
-
-
-def template_supported(value: str, support_text: str) -> bool:
-    if value == "{username}":
-        return True
-    if value.count("{username}") != 1 or len(value) > 200:
-        return False
-    static = value.replace("{username}", "").strip().lower()
-    return bool(static and static in support_text)
 
 
 def evidence_support_text(
@@ -814,7 +785,6 @@ Return only one JSON object:
   "failure_statuses": [400, 401, 403],
   "success_json_paths": [],
   "wordlist_identity": "",
-  "username_template": "{{username}}",
   "confidence": "low",
   "reasoning": "brief evidence-grounded explanation"
 }}

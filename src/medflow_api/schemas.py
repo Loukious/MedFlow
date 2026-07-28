@@ -47,7 +47,6 @@ class PasswordSprayRequest(BaseModel):
     endpoint: str = Field(..., min_length=1)
     username_wordlist_paths: list[str] = Field(default_factory=list, max_length=10)
     password_wordlist_paths: list[str] = Field(default_factory=list, max_length=10)
-    username_template: str = "{username}"
     username_field: str = "username"
     password_field: str = "password"
     request_format: Literal["json", "form"] = "json"

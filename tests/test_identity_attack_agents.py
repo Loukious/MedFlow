@@ -34,7 +34,7 @@ class LabHandler(BaseHTTPRequestHandler):
             body = b"""
             <html><body>
               <form method="post" action="/login">
-                <input name="email" type="email">
+                <input name="username">
                 <input name="password" type="password">
               </form>
             </body></html>
@@ -54,12 +54,12 @@ class LabHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         length = int(self.headers.get("content-length", "0"))
         payload = json.loads(self.rfile.read(length))
-        if payload.get("email") == "locked@medflow.test":
+        if payload.get("username") == "locked":
             body = b'{"error":"Too many attempts"}'
             status = 429
         elif (
             self.path == "/login"
-            and payload.get("email") == "test@medflow.test"
+            and payload.get("username") == "test"
             and payload.get("password") == "password"
         ):
             body = b'{"authentication":{"token":"must-not-be-retained"}}'
@@ -137,7 +137,7 @@ class IdentityAttackAgentTests(unittest.TestCase):
             blocked = WordlistAttackConfig(
                 target_url=self.url,
                 endpoint="/login",
-                username="test@medflow.test",
+                username="test",
                 password_wordlist_paths=[secrets],
                 wordlist_roots=(root,),
             )
@@ -149,10 +149,10 @@ class IdentityAttackAgentTests(unittest.TestCase):
                 WordlistAttackConfig(
                     target_url=self.url,
                     endpoint="/login",
-                    username="test@medflow.test",
+                    username="test",
                     password_wordlist_paths=[secrets],
                     wordlist_roots=(root,),
-                    username_field="email",
+                    username_field="username",
                     success_json_paths=("token",),
                     max_passwords=2,
                     max_attempts=2,
@@ -197,8 +197,7 @@ class IdentityAttackAgentTests(unittest.TestCase):
                     username_wordlist_paths=[users],
                     password_wordlist_paths=[secrets],
                     wordlist_roots=(root,),
-                    username_template="{username}@medflow.test",
-                    username_field="email",
+                    username_field="username",
                     success_json_paths=("authentication.token",),
                     max_users=2,
                     max_passwords=1,
@@ -219,7 +218,7 @@ class IdentityAttackAgentTests(unittest.TestCase):
             self.assertEqual(result["password_candidates_attempted"], 1)
             self.assertEqual(
                 result["attempted_identities"],
-                ["other@medflow.test", "test@medflow.test"],
+                ["other", "test"],
             )
             self.assertNotIn("password", result["successes"][0])
             self.assertFalse(result["plaintext_credentials_retained"])
@@ -241,10 +240,10 @@ class IdentityAttackAgentTests(unittest.TestCase):
                 WordlistAttackConfig(
                     target_url=self.url,
                     endpoint="/login",
-                    username="test@medflow.test",
+                    username="test",
                     password_wordlist_paths=[secrets],
                     wordlist_roots=(root,),
-                    username_field="email",
+                    username_field="username",
                     success_json_paths=("authentication.token",),
                     max_passwords=2,
                     max_attempts=2,
@@ -270,8 +269,7 @@ class IdentityAttackAgentTests(unittest.TestCase):
                     username_wordlist_paths=[users],
                     password_wordlist_paths=[secrets],
                     wordlist_roots=(root,),
-                    username_template="{username}@medflow.test",
-                    username_field="email",
+                    username_field="username",
                     success_json_paths=("authentication.token",),
                     max_users=2,
                     max_passwords=2,
@@ -312,10 +310,10 @@ class IdentityAttackAgentTests(unittest.TestCase):
                 WordlistAttackConfig(
                     target_url=self.url,
                     endpoint="/login",
-                    username="locked@medflow.test",
+                    username="locked",
                     password_wordlist_paths=[secrets],
                     wordlist_roots=(root,),
-                    username_field="email",
+                    username_field="username",
                     max_passwords=3,
                     max_attempts=3,
                     delay_seconds=0,
@@ -339,15 +337,14 @@ class IdentityAttackAgentTests(unittest.TestCase):
                     "endpoint": "/login",
                     "method": "POST",
                     "request_format": "form",
-                    "username_field": "email",
+                    "username_field": "username",
                     "password_field": "password",
                     "static_fields": {},
                     "headers": {},
                     "success_statuses": [200],
                     "failure_statuses": [400, 401, 403],
                     "success_json_paths": [],
-                    "wordlist_identity": "test@medflow.test",
-                    "username_template": "{username}@medflow.test",
+                    "wordlist_identity": "test",
                     "confidence": "high",
                     "reasoning": "The HTML form supplies the contract.",
                 }
@@ -356,7 +353,7 @@ class IdentityAttackAgentTests(unittest.TestCase):
         discovery = discover_authentication_contract(
             (
                 "Run an authorized wordlist and password-spray assessment using "
-                "the synthetic identity test@medflow.test."
+                "the synthetic identity test."
             ),
             self.url,
             provider="local_qwen",
@@ -366,15 +363,11 @@ class IdentityAttackAgentTests(unittest.TestCase):
         self.assertIsNotNone(discovery.contract)
         assert discovery.contract is not None
         self.assertEqual(discovery.contract.endpoint, "/login")
-        self.assertEqual(discovery.contract.username_field, "email")
+        self.assertEqual(discovery.contract.username_field, "username")
         self.assertEqual(discovery.contract.password_field, "password")
         self.assertEqual(
             discovery.contract.wordlist_identity,
-            "test@medflow.test",
-        )
-        self.assertEqual(
-            discovery.contract.username_template,
-            "{username}@medflow.test",
+            "test",
         )
 
     @patch("medflow_redteam.auth_contract_agent.call_redteam_llm")
@@ -389,15 +382,14 @@ class IdentityAttackAgentTests(unittest.TestCase):
                     "endpoint": "/login",
                     "method": "POST",
                     "request_format": "form",
-                    "username_field": "email",
+                    "username_field": "username",
                     "password_field": "password",
                     "static_fields": {},
                     "headers": {"X-Admin": "true"},
                     "success_statuses": [200],
                     "failure_statuses": [401],
                     "success_json_paths": [],
-                    "wordlist_identity": "invented@example.test",
-                    "username_template": "{username}@example.test",
+                    "wordlist_identity": "invented",
                     "confidence": "high",
                     "reasoning": "Invented values should be rejected.",
                 }

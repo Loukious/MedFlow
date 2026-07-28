@@ -257,7 +257,6 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
                     ]
                 )
             ],
-            username_template=request.password_spray.username_template,
             username_field=request.password_spray.username_field,
             password_field=request.password_spray.password_field,
             request_format=request.password_spray.request_format,

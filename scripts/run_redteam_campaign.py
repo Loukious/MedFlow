@@ -339,7 +339,6 @@ def main() -> None:
     parser.add_argument("--login-header", action="append", default=[])
     parser.add_argument("--login-success-status", action="append", type=int, default=[])
     parser.add_argument("--login-failure-status", action="append", type=int, default=[])
-    parser.add_argument("--username-template", default="{username}")
     parser.add_argument("--username-wordlist", action="append", type=Path)
     parser.add_argument("--password-wordlist", action="append", type=Path)
     parser.add_argument("--login-success-json-path", action="append", default=[])
@@ -461,7 +460,6 @@ def main() -> None:
                 args.password_wordlist
                 or list(DEFAULT_SPRAY_PASSWORD_WORDLISTS)
             ),
-            username_template=args.username_template,
             username_field=args.login_username_field,
             password_field=args.login_password_field,
             request_format=args.login_format,

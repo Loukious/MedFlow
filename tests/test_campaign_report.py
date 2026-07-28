@@ -348,7 +348,7 @@ def test_plaintext_lab_credentials_are_visible_and_owner_only(tmp_path) -> None:
             "successful": 1,
             "successes": [
                 {
-                    "username": "root@medflow-agent.test",
+                    "username": "root",
                     "password": "synthetic-password",
                     "password_index": 2,
                     "status": 200,
@@ -363,7 +363,7 @@ def test_plaintext_lab_credentials_are_visible_and_owner_only(tmp_path) -> None:
 
     assert "## Credential Validation" in markdown
     assert "### Plaintext Lab Credentials" in markdown
-    assert "root@medflow-agent.test" in markdown
+    assert "root" in markdown
     assert "synthetic-password" in markdown
     assert (
         payload["wordlist_attack"]["successes"][0]["password"]
@@ -386,10 +386,9 @@ def test_password_spray_report_distinguishes_users_from_http_attempts() -> None:
         "password_candidates_loaded": 3,
         "password_candidates_attempted": 2,
         "attempted_identities": [
-            "root@medflow-agent.test",
-            "admin@medflow-agent.test",
+            "root",
+            "admin",
         ],
-        "username_template": "{username}@medflow-agent.test",
         "username_wordlists": [
             {
                 "path": "data/wordlists/SecLists/Usernames/"
@@ -400,7 +399,7 @@ def test_password_spray_report_distinguishes_users_from_http_attempts() -> None:
         "lockout_detected": False,
         "successes": [
             {
-                "username": "admin@medflow-agent.test",
+                "username": "admin",
                 "password_index": 2,
                 "status": 200,
             }
@@ -413,5 +412,5 @@ def test_password_spray_report_distinguishes_users_from_http_attempts() -> None:
     assert "**Username candidates:** 10 loaded; 10 tested" in markdown
     assert "**Password candidates:** 3 loaded; 2 reached" in markdown
     assert "top-usernames-shortlist.txt" in markdown
-    assert "root@medflow-agent.test" in markdown
-    assert "admin@medflow-agent.test" in markdown
+    assert "`root`" in markdown
+    assert "`admin`" in markdown

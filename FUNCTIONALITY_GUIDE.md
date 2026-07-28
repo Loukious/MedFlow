@@ -798,18 +798,17 @@ Run the agents directly:
 .venv/bin/python scripts/run_wordlist_attack_agent.py \
   http://127.0.0.1:3000/ \
   --endpoint /login \
-  --username one-synthetic-user@example.test \
-  --username-field email \
-  --success-json-path authentication.token \
+  --username test \
+  --username-field username \
+  --success-json-path authentication.accepted \
   --max-passwords 100 --max-attempts 100 \
   --execution-mode aggressive_lab --execute
 
 .venv/bin/python scripts/run_password_spray_agent.py \
   http://127.0.0.1:3000/ \
   --endpoint /login \
-  --username-field email \
-  --username-template '{username}@synthetic.test' \
-  --success-json-path authentication.token \
+  --username-field username \
+  --success-json-path authentication.accepted \
   --max-users 3 --max-passwords 2 --max-attempts 6 \
   --execution-mode aggressive_lab --execute
 ```
@@ -818,7 +817,7 @@ Run both through the regular campaign with autonomous contract discovery:
 
 ```bash
 .venv/bin/python scripts/run_redteam_campaign.py \
-  "Run an authorized wordlist attack and password spray against the isolated lab using the synthetic identity one-synthetic-user@example.test" \
+  "Run an authorized wordlist attack and password spray against the isolated lab using the synthetic identity test" \
   --url http://127.0.0.1:3000/ \
   --execution-mode aggressive_lab \
   --provider local_qwen \
@@ -827,8 +826,12 @@ Run both through the regular campaign with autonomous contract discovery:
 
 The prompt supplies the one identity authorized for the concentrated wordlist test. The LLM decides
 whether to route the two credential specialists and discovers the endpoint, fields, request format,
-username template, and response signals. If the target does not expose enough evidence, the agent
+and response signals. If the target does not expose enough evidence, the agent
 returns `missing_prerequisite` instead of guessing.
+
+Each username-wordlist line is treated as a complete identity. The agent never appends or derives
+a domain. For an email-based target, provide a target-relevant wordlist containing complete email
+addresses; a generic bare-username list is not silently converted into invented addresses.
 
 Accepted passwords are redacted by default. Add `--reveal-credentials` only for a disposable
 private lab when the actual accepted username/password pairs are required in terminal output and
@@ -843,13 +846,12 @@ overrides:
 .venv/bin/python scripts/run_redteam_campaign.py \
   "Compare wordlist and password-spray resistance in the authorized identity lab" \
   --url http://127.0.0.1:3000/ \
-  --wordlist-attack --wordlist-username one-synthetic-user@example.test \
+  --wordlist-attack --wordlist-username test \
   --wordlist-max-passwords 100 --wordlist-max-attempts 100 \
   --password-spray \
   --login-endpoint /login \
-  --login-username-field email \
-  --username-template '{username}@synthetic.test' \
-  --login-success-json-path authentication.token \
+  --login-username-field username \
+  --login-success-json-path authentication.accepted \
   --spray-max-users 3 --spray-max-passwords 2 --spray-max-attempts 6 \
   --execution-mode aggressive_lab
 ```
@@ -866,16 +868,15 @@ directory's `identity_agents` subdirectory and are also exposed through campaign
   "reveal_credentials": true,
   "wordlist_attack": {
     "endpoint": "/login",
-    "username": "one-synthetic-user@example.test",
-    "username_field": "email",
-    "success_json_paths": ["authentication.token"],
+    "username": "test",
+    "username_field": "username",
+    "success_json_paths": ["authentication.accepted"],
     "max_passwords": 100
   },
   "password_spray": {
     "endpoint": "/login",
-    "username_template": "{username}@synthetic.test",
-    "username_field": "email",
-    "success_json_paths": ["authentication.token"],
+    "username_field": "username",
+    "success_json_paths": ["authentication.accepted"],
     "max_users": 3,
     "max_passwords": 2
   }
@@ -900,35 +901,33 @@ variations, response interpretation, verdicts, and reporting to the LLM. For exa
 Public assignment targets can use the bounded authorization subworkflow. Active wordlist and spray
 execution remains private-lab-only.
 
-For the autonomous campaign example, use the managed identity fixture. Its container stays on an
-internal Docker network with no internet route. A pair of managed `socat` relays exposes only the
-application on host loopback, and `up` creates the three disposable synthetic accounts expected by
-the example prompt:
+For the autonomous campaign example, use the managed identity fixture. It is a minimal training
+service bound directly to host loopback, performs no outbound requests, and loads three disposable
+plain usernames from the local SecLists checkout:
 
 ```bash
-sudo .venv/bin/python scripts/manage_identity_training_lab.py up
+.venv/bin/python scripts/manage_identity_training_lab.py up
 
 .venv/bin/python scripts/run_redteam_campaign.py \
-  "Run an authorized wordlist attack and password spray against this isolated lab using the synthetic identity test@medflow-agent.test" \
+  "Run an authorized wordlist attack and password spray against this isolated lab using the synthetic identity test" \
   --url http://127.0.0.1:3000/ \
   --execution-mode aggressive_lab \
   --provider local_qwen \
   --reveal-credentials \
   --report --traces
 
-sudo .venv/bin/python scripts/manage_identity_training_lab.py down
+.venv/bin/python scripts/manage_identity_training_lab.py down
 ```
 
-Use `status` to inspect the container and both relays. Runtime PID state and relay logs are stored
-under ignored `data/labs/runtime/identity_training_lab`.
+Use `status` to inspect the managed loopback process. Runtime PID state and logs are stored under
+ignored `reports/identity_training_lab_runtime`.
 
 ```bash
-sudo .venv/bin/python scripts/manage_identity_training_lab.py status
+.venv/bin/python scripts/manage_identity_training_lab.py status
 ```
 
 The fixture-specific manager skips the OS-oriented `root` entry and creates disposable synthetic
 accounts from the next three username entries and the second password entry. The production
-discovery and credential agents remain generic and contain no Juice Shop-specific endpoint or
-credential logic. The expected evidence shows the Wordlist Agent validating
-`test@medflow-agent.test`, while the Spray Agent independently advances through its SecLists
-username candidates and confirms a different account.
+discovery and credential agents remain generic. The expected evidence shows the Wordlist Agent
+validating `test`, while the Spray Agent independently advances through its unmodified SecLists
+username candidates and confirms `admin`.

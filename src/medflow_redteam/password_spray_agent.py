@@ -33,7 +33,6 @@ class PasswordSprayConfig:
         default_factory=lambda: list(DEFAULT_PASSWORD_WORDLISTS)
     )
     wordlist_roots: tuple[Path, ...] = (Path("data/wordlists"),)
-    username_template: str = "{username}"
     username_field: str = "username"
     password_field: str = "password"
     request_format: str = "json"
@@ -77,8 +76,6 @@ class PasswordSprayAgent:
             success_json_paths=self.config.success_json_paths,
             headers=self.config.headers,
         )
-        if "{username}" not in self.config.username_template:
-            raise ValueError("username_template must contain {username}.")
         if not 1 <= self.config.max_users <= 50:
             raise ValueError("max_users must be between 1 and 50.")
         if not 1 <= self.config.max_passwords <= 10:
@@ -102,10 +99,7 @@ class PasswordSprayAgent:
             limit=self.config.max_passwords,
             allowed_roots=self.config.wordlist_roots,
         )
-        identities = [
-            self.config.username_template.format(username=username)
-            for username in usernames[: self.config.max_users]
-        ]
+        identities = usernames[: self.config.max_users]
         passwords = passwords[: self.config.max_passwords]
         attempts: list[dict[str, Any]] = []
         successes: list[dict[str, Any]] = []
@@ -221,7 +215,6 @@ class PasswordSprayAgent:
                 attempted_password_indices
             ),
             "attempted_identities": attempted_identities,
-            "username_template": self.config.username_template,
             "successes": successes,
             "plaintext_credentials_retained": bool(
                 successes and self.config.reveal_credentials

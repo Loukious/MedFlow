@@ -620,10 +620,11 @@ Available specialists:
 - blockchain_security: smart contracts, wallets, and chain-specific controls
 - reporting: evidence synthesis
 
-Select specialists from the objective and target type. Select authorization_assessment when the
-objective requests or reasonably includes access-control testing and the explicit URL permits
-same-origin HTTP evidence collection. Do not select it for a network-only target or a goal that
-clearly excludes web authorization. A broad web/API security assessment may include it.
+Select specialists from the objective and target type. Select authorization_assessment only when
+the objective explicitly requests authorization, access-control, role, tenant, session-boundary,
+IDOR, or object/function-level testing. A URL, login form, wordlist attack, password spray, or
+credential-testing objective alone is not authorization scope. Do not expand a credential-only
+campaign into general web/API or authorization testing.
 Select wordlist_attack and/or password_spray when the objective explicitly requests that credential
 test and either a manual execution configuration is present or autonomous authentication-contract
 discovery is available. Do not infer permission for credential testing from a generic web test.
@@ -1257,7 +1258,6 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             spray_config = PasswordSprayConfig(
                 target_url=target_url,
                 endpoint=contract.endpoint,
-                username_template=contract.username_template,
                 username_field=contract.username_field,
                 password_field=contract.password_field,
                 request_format=contract.request_format,

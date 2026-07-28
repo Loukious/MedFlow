@@ -32,7 +32,6 @@ def main() -> None:
     parser.add_argument("--endpoint", required=True)
     parser.add_argument("--username-wordlist", action="append", type=Path)
     parser.add_argument("--password-wordlist", action="append", type=Path)
-    parser.add_argument("--username-template", default="{username}")
     parser.add_argument("--username-field", default="username")
     parser.add_argument("--password-field", default="password")
     parser.add_argument("--request-format", choices=["json", "form"], default="json")
@@ -87,7 +86,6 @@ def main() -> None:
             password_wordlist_paths=(
                 args.password_wordlist or list(DEFAULT_PASSWORD_WORDLISTS)
             ),
-            username_template=args.username_template,
             username_field=args.username_field,
             password_field=args.password_field,
             request_format=args.request_format,

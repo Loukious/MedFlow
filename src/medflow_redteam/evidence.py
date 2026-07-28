@@ -129,8 +129,8 @@ def normalize_wordlist_attack_evidence(
                 "proof_kind": "bounded_authentication_attempt",
                 "safe_summary": (
                     f"Identity {success.get('username')} authenticated using password "
-                    f"wordlist position {success.get('password_index')}. No password or "
-                    "session token was retained."
+                    f"wordlist position {success.get('password_index')}. "
+                    f"{credential_retention_summary(success)}"
                 ),
                 "remediation": (
                     "Reset the affected lab credential, block common passwords, enforce MFA, "
@@ -158,8 +158,8 @@ def normalize_password_spray_evidence(
                 "proof_kind": "bounded_authentication_attempt",
                 "safe_summary": (
                     f"Identity {success.get('username')} authenticated using password "
-                    f"wordlist position {success.get('password_index')}. No password or "
-                    "session token was retained."
+                    f"wordlist position {success.get('password_index')}. "
+                    f"{credential_retention_summary(success)}"
                 ),
                 "remediation": (
                     "Reset the affected lab credential, enforce resistant password policy "
@@ -169,6 +169,16 @@ def normalize_password_spray_evidence(
             }
         )
     return evidence
+
+
+def credential_retention_summary(success: dict[str, Any]) -> str:
+    if "password" in success:
+        return (
+            "The accepted password was retained only in the owner-restricted "
+            "campaign artifacts because explicit lab reporting was enabled; no "
+            "session token was retained."
+        )
+    return "No password or session token was retained."
 
 
 def remediation_for_web_finding(finding: dict[str, Any]) -> str:

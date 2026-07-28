@@ -43,6 +43,7 @@ class WordlistAttackConfig:
     verify_tls: bool = True
     execution_mode: str = "safe"
     execute: bool = False
+    reveal_credentials: bool = False
     trace_path: Path | None = None
 
 
@@ -130,9 +131,17 @@ class WordlistAttackAgent:
                         "status": attempt.get("status"),
                         "proof": (
                             "The configured success status and response signal matched. "
-                            "No credential or token value was retained."
+                            + (
+                                "The accepted lab password was retained because explicit "
+                                "plaintext credential reporting was enabled. No response "
+                                "value or session token was retained."
+                                if self.config.reveal_credentials
+                                else "No credential or token value was retained."
+                            )
                         ),
                     }
+                    if self.config.reveal_credentials:
+                        success["password"] = password
                     stop_reason = "credential_confirmed"
                     break
                 if outcome == "lockout_detected":
@@ -170,6 +179,9 @@ class WordlistAttackAgent:
             "attempted": len(attempts),
             "successful": 1 if success else 0,
             "successes": [success] if success else [],
+            "plaintext_credentials_retained": bool(
+                success and self.config.reveal_credentials
+            ),
             "outcome_counts": counts,
             "stop_reason": stop_reason,
             "lockout_detected": stop_reason == "lockout_or_rate_limit_detected",

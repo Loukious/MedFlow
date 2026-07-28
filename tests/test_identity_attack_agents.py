@@ -11,6 +11,8 @@ from unittest.mock import patch
 from medflow_redteam.auth_contract_agent import (
     discover_authentication_contract,
 )
+from medflow_redteam.campaign import compact_reporting_draft
+from medflow_redteam.credential_reporting import REDACTED_PASSWORD
 from medflow_redteam.lab_http import load_wordlist, validate_lab_url
 from medflow_redteam.password_spray_agent import (
     PasswordSprayAgent,
@@ -163,6 +165,8 @@ class IdentityAttackAgentTests(unittest.TestCase):
             self.assertEqual(result["attempted"], 2)
             self.assertEqual(result["successful"], 1)
             self.assertEqual(result["successes"][0]["password_index"], 2)
+            self.assertNotIn("password", result["successes"][0])
+            self.assertFalse(result["plaintext_credentials_retained"])
             trace_text = trace.read_text(encoding="utf-8")
             self.assertNotIn("123456", trace_text)
             self.assertNotIn("must-not-be-retained", trace_text)
@@ -209,10 +213,85 @@ class IdentityAttackAgentTests(unittest.TestCase):
             self.assertEqual(result["successful"], 1)
             self.assertEqual(result["successes"][0]["username_index"], 2)
             self.assertEqual(result["successes"][0]["password_index"], 1)
+            self.assertNotIn("password", result["successes"][0])
+            self.assertFalse(result["plaintext_credentials_retained"])
             trace_text = trace.read_text(encoding="utf-8")
             self.assertNotIn("123456", trace_text)
             self.assertNotIn("must-not-be-retained", trace_text)
             self.assertNotIn('"password":', trace_text)
+
+    def test_explicit_lab_reporting_retains_only_accepted_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            users = root / "users.txt"
+            secrets = root / "secrets.txt"
+            users.write_text("other\ntest\n", encoding="utf-8")
+            secrets.write_text("123456\npassword\n", encoding="utf-8")
+
+            wordlist_trace = root / "wordlist.jsonl"
+            wordlist = WordlistAttackAgent(
+                WordlistAttackConfig(
+                    target_url=self.url,
+                    endpoint="/login",
+                    username="test@medflow.test",
+                    password_wordlist_paths=[secrets],
+                    wordlist_roots=(root,),
+                    username_field="email",
+                    success_json_paths=("authentication.token",),
+                    max_passwords=2,
+                    max_attempts=2,
+                    delay_seconds=0,
+                    execution_mode="aggressive_lab",
+                    execute=True,
+                    reveal_credentials=True,
+                    trace_path=wordlist_trace,
+                )
+            ).run()
+            self.assertEqual(wordlist["successes"][0]["password"], "password")
+            self.assertTrue(wordlist["plaintext_credentials_retained"])
+            self.assertNotIn(
+                '"password":',
+                wordlist_trace.read_text(encoding="utf-8"),
+            )
+
+            spray_trace = root / "spray.jsonl"
+            spray = PasswordSprayAgent(
+                PasswordSprayConfig(
+                    target_url=self.url,
+                    endpoint="/login",
+                    username_wordlist_paths=[users],
+                    password_wordlist_paths=[secrets],
+                    wordlist_roots=(root,),
+                    username_template="{username}@medflow.test",
+                    username_field="email",
+                    success_json_paths=("authentication.token",),
+                    max_users=2,
+                    max_passwords=2,
+                    max_attempts=4,
+                    delay_seconds=0,
+                    execution_mode="aggressive_lab",
+                    execute=True,
+                    reveal_credentials=True,
+                    trace_path=spray_trace,
+                )
+            ).run()
+            self.assertEqual(spray["successes"][0]["password"], "password")
+            self.assertTrue(spray["plaintext_credentials_retained"])
+            self.assertNotIn(
+                '"password":',
+                spray_trace.read_text(encoding="utf-8"),
+            )
+
+            draft = compact_reporting_draft(
+                {
+                    "goal": "Authorized identity lab validation",
+                    "wordlist_attack": wordlist,
+                    "password_spray": spray,
+                }
+            )
+            draft_text = json.dumps(draft)
+            self.assertNotIn('"password": "password"', draft_text)
+            self.assertIn(REDACTED_PASSWORD, draft_text)
 
     def test_wordlist_agent_stops_on_rate_limit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

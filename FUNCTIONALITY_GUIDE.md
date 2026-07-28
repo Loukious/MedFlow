@@ -830,6 +830,12 @@ whether to route the two credential specialists and discovers the endpoint, fiel
 username template, and response signals. If the target does not expose enough evidence, the agent
 returns `missing_prerequisite` instead of guessing.
 
+Accepted passwords are redacted by default. Add `--reveal-credentials` only for a disposable
+private lab when the actual accepted username/password pairs are required in terminal output and
+the saved JSON/Markdown reports. Those report files are written with owner-only (`0600`)
+permissions. Rejected candidates, response values, session tokens, JSONL attempt traces, LLM
+prompts, and graph memory remain redacted.
+
 For deterministic replay or an application that does not expose its login contract, pass manual
 overrides:
 
@@ -857,6 +863,7 @@ directory's `identity_agents` subdirectory and are also exposed through campaign
   "goal": "Compare authorized lab credential controls",
   "target_url": "http://127.0.0.1:3000/",
   "execution_mode": "aggressive_lab",
+  "reveal_credentials": true,
   "wordlist_attack": {
     "endpoint": "/login",
     "username": "one-synthetic-user@example.test",
@@ -906,6 +913,7 @@ sudo .venv/bin/python scripts/manage_identity_training_lab.py up
   --url http://127.0.0.1:3000/ \
   --execution-mode aggressive_lab \
   --provider local_qwen \
+  --reveal-credentials \
   --report --traces
 
 sudo .venv/bin/python scripts/manage_identity_training_lab.py down

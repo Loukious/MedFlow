@@ -232,6 +232,7 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
             verify_tls=request.wordlist_attack.verify_tls,
             execution_mode=request.execution_mode,
             execute=True,
+            reveal_credentials=request.reveal_credentials,
             trace_path=trace_root / f"wordlist_attempts_{trace_stamp}.jsonl",
         )
     password_spray_config = None
@@ -274,6 +275,7 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
             verify_tls=request.password_spray.verify_tls,
             execution_mode=request.execution_mode,
             execute=True,
+            reveal_credentials=request.reveal_credentials,
             trace_path=trace_root
             / f"password_spray_attempts_{trace_stamp}.jsonl",
         )
@@ -312,6 +314,7 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
         identity_output_root=trace_root,
         wordlist_attack_config=wordlist_config,
         password_spray_config=password_spray_config,
+        reveal_credentials=request.reveal_credentials,
     )
     saved = save_campaign_run(run, Path(request.output_dir))
     payload = asdict(run)

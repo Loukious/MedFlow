@@ -23,7 +23,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Try a bounded password wordlist against one identity on an allowlisted "
-            "lab URL. Plaintext passwords and response values are never persisted."
+            "lab URL. Plaintext passwords are redacted unless the lab-only "
+            "--reveal-credentials option is supplied."
         )
     )
     parser.add_argument("url")
@@ -44,6 +45,14 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=5.0)
     parser.add_argument("--insecure", action="store_true")
     parser.add_argument("--trace", type=Path)
+    parser.add_argument(
+        "--reveal-credentials",
+        action="store_true",
+        help=(
+            "Include an accepted synthetic lab password in stdout. Rejected "
+            "candidates, response values, tokens, and the JSONL trace stay redacted."
+        ),
+    )
     parser.add_argument(
         "--execution-mode",
         choices=["safe", "aggressive_lab"],
@@ -87,6 +96,7 @@ def main() -> None:
             verify_tls=not args.insecure,
             execution_mode=args.execution_mode,
             execute=args.execute,
+            reveal_credentials=args.reveal_credentials,
             trace_path=trace,
         )
     ).run()

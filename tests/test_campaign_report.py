@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import stat
 
 from medflow_redteam.campaign import CampaignRun, save_campaign_run
 from medflow_redteam.campaign_report import render_campaign_markdown
@@ -327,3 +328,46 @@ def test_save_campaign_run_retains_full_narrative_only_in_json(tmp_path) -> None
     assert "FULL_MODEL_NARRATIVE" not in markdown
     assert f"[{paths['json'].name}]({paths['json'].name})" in markdown
     assert "No confirmed finding" in markdown
+
+
+def test_plaintext_lab_credentials_are_visible_and_owner_only(tmp_path) -> None:
+    run = CampaignRun(
+        goal="Validate disposable lab credentials",
+        target=None,
+        target_url="http://127.0.0.1:3000/",
+        provider="local_qwen",
+        report="Campaign complete.",
+        steps=[],
+        agents=[],
+        sources=[],
+        tool_traces=[],
+        wordlist_attack={
+            "status": "confirmed_credential",
+            "endpoint": "http://127.0.0.1:3000/login",
+            "attempted": 2,
+            "successful": 1,
+            "successes": [
+                {
+                    "username": "root@medflow-agent.test",
+                    "password": "synthetic-password",
+                    "password_index": 2,
+                    "status": 200,
+                }
+            ],
+        },
+    )
+
+    paths = save_campaign_run(run, tmp_path)
+    markdown = paths["markdown"].read_text(encoding="utf-8")
+    payload = json.loads(paths["json"].read_text(encoding="utf-8"))
+
+    assert "## Credential Validation" in markdown
+    assert "### Plaintext Lab Credentials" in markdown
+    assert "root@medflow-agent.test" in markdown
+    assert "synthetic-password" in markdown
+    assert (
+        payload["wordlist_attack"]["successes"][0]["password"]
+        == "synthetic-password"
+    )
+    assert stat.S_IMODE(paths["json"].stat().st_mode) == 0o600
+    assert stat.S_IMODE(paths["markdown"].stat().st_mode) == 0o600

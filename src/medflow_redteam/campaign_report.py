@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import re
+from html import escape
 from pathlib import Path
 from typing import Any
+
+from .credential_reporting import collect_revealed_credentials
 
 
 CONFIRMED_STATUSES = {
@@ -466,6 +469,14 @@ def append_identity_validation(
         )
     lines.append("")
 
+    revealed = render_revealed_credentials_section(
+        wordlist,
+        spray,
+        heading="### Plaintext Lab Credentials",
+    )
+    if revealed:
+        lines.extend([*revealed.splitlines(), ""])
+
     for name, result in results:
         lines.extend(
             [
@@ -506,6 +517,42 @@ def append_identity_validation(
                     )
                 )
         lines.append("")
+
+
+def render_revealed_credentials_section(
+    raw_wordlist: Any,
+    raw_spray: Any,
+    *,
+    heading: str = "## Confirmed Lab Credentials",
+) -> str:
+    credentials = collect_revealed_credentials(raw_wordlist, raw_spray)
+    if not credentials:
+        return ""
+
+    lines = [
+        heading,
+        "",
+        (
+            "> **Sensitive lab output:** Plaintext credentials were intentionally "
+            "retained for this disposable private-lab run. Rotate them after testing "
+            "and restrict access to the report artifacts."
+        ),
+        "",
+        "| Attack | Identity | Password | Endpoint | Password position | HTTP status |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for credential in credentials:
+        lines.append(
+            table_row(
+                credential["attack"],
+                code(credential["username"]),
+                secret_code(credential["password"]),
+                code(credential["endpoint"]),
+                integer(credential.get("password_index")),
+                integer(credential.get("status")),
+            )
+        )
+    return "\n".join(lines)
 
 
 def append_capability_validation(
@@ -1367,6 +1414,10 @@ def join_values(value: Any) -> str:
 def code(value: Any) -> str:
     text = clean_text(value, 500).replace("`", "'")
     return f"`{text}`"
+
+
+def secret_code(value: Any) -> str:
+    return f"<code>{escape(str(value), quote=False)}</code>"
 
 
 def table_row(*values: Any) -> str:

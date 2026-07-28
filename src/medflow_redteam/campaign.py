@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -24,8 +24,15 @@ from .authorization_agent import (
     build_inline_prompt_document,
     run_inline_authorization_assessment,
 )
-from .campaign_report import render_campaign_markdown
+from .campaign_report import (
+    render_campaign_markdown,
+    render_revealed_credentials_section,
+)
 from .command_planner import plan_recon_strategy, plan_validation_strategy
+from .credential_reporting import (
+    collect_revealed_credentials,
+    redact_plaintext_passwords,
+)
 from .evidence import (
     normalize_authorization_evidence,
     normalize_password_spray_evidence,
@@ -130,6 +137,7 @@ class CampaignState(TypedDict, total=False):
     authorization_tool_rounds: int
     identity_output_root: Path
     autonomous_identity_enabled: bool
+    reveal_credentials: bool
     wordlist_attack_config: WordlistAttackConfig | None
     password_spray_config: PasswordSprayConfig | None
     ports: list[int]
@@ -176,6 +184,16 @@ def append_phase(state: CampaignState, phase: str, status: str, evidence: str = 
             "evidence": evidence,
         },
     ]
+
+
+def credential_retention_decision(enabled: bool) -> str:
+    if enabled:
+        return (
+            "Retain only accepted synthetic lab credentials because explicit "
+            "plaintext reporting was enabled; never retain rejected candidates, "
+            "response values, or session tokens."
+        )
+    return "Never retain plaintext passwords, response values, or session tokens."
 
 
 def append_timeline(state: CampaignState, name: str, input_text: str, status: str, evidence: str = "") -> list[dict[str, Any]]:
@@ -476,11 +494,11 @@ def compact_reporting_draft(state: CampaignState) -> dict[str, Any]:
             1_200,
         ),
         "wordlist_attack": truncate_value(
-            state.get("wordlist_attack", {}),
+            redact_plaintext_passwords(state.get("wordlist_attack", {})),
             1_200,
         ),
         "password_spray": truncate_value(
-            state.get("password_spray", {}),
+            redact_plaintext_passwords(state.get("password_spray", {})),
             1_200,
         ),
         "graph_memory_hits": [
@@ -1231,6 +1249,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
                 success_json_paths=contract.success_json_paths,
                 execution_mode=state.get("execution_mode", "safe"),
                 execute=True,
+                reveal_credentials=state.get("reveal_credentials", False),
                 trace_path=trace_root
                 / f"wordlist_attempts_{trace_stamp}.jsonl",
             )
@@ -1249,6 +1268,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
                 success_json_paths=contract.success_json_paths,
                 execution_mode=state.get("execution_mode", "safe"),
                 execute=True,
+                reveal_credentials=state.get("reveal_credentials", False),
                 trace_path=trace_root
                 / f"password_spray_attempts_{trace_stamp}.jsonl",
             )
@@ -1404,7 +1424,7 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
                 decisions=[
                     "Reject targets outside the configured local lab allowlist.",
                     "Stop on the first accepted credential, HTTP 423/429, or the attempt budget.",
-                    "Never retain plaintext passwords, response values, or session tokens.",
+                    credential_retention_decision(config.reveal_credentials),
                 ],
                 outputs=[
                     f"{result.get('attempted', 0)} candidate password(s) tested",
@@ -1440,7 +1460,13 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
                 make_trace(
                     "wordlist_attack_agent",
                     config.target_url,
-                    json.dumps(truncate_value(result, 1_200), indent=2),
+                    json.dumps(
+                        truncate_value(
+                            redact_plaintext_passwords(result),
+                            1_200,
+                        ),
+                        indent=2,
+                    ),
                 ),
             ],
             "tool_timeline": append_timeline(
@@ -1571,7 +1597,7 @@ Focus on AD relationships, risky paths, MFA fatigue, device registration, and de
                 decisions=[
                     "Try one candidate password across identities before advancing.",
                     "Stop immediately on HTTP 423/429 or the configured success threshold.",
-                    "Never retain plaintext passwords, response values, or session tokens.",
+                    credential_retention_decision(config.reveal_credentials),
                 ],
                 outputs=[
                     f"{result.get('attempted', 0)} authentication attempt(s)",
@@ -1607,7 +1633,13 @@ Focus on AD relationships, risky paths, MFA fatigue, device registration, and de
                 make_trace(
                     "password_spray_agent",
                     config.target_url,
-                    json.dumps(truncate_value(result, 1_200), indent=2),
+                    json.dumps(
+                        truncate_value(
+                            redact_plaintext_passwords(result),
+                            1_200,
+                        ),
+                        indent=2,
+                    ),
                 ),
             ],
             "tool_timeline": append_timeline(
@@ -2089,6 +2121,7 @@ def run_campaign(
     identity_output_root: Path | None = None,
     wordlist_attack_config: WordlistAttackConfig | None = None,
     password_spray_config: PasswordSprayConfig | None = None,
+    reveal_credentials: bool = False,
 ) -> CampaignRun:
     started = time.perf_counter()
     settings = load_settings()
@@ -2102,6 +2135,38 @@ def run_campaign(
             target_url = None
         else:
             build_inline_prompt_document(goal, target_url)
+    reveal_credentials = bool(
+        reveal_credentials
+        or (
+            wordlist_attack_config
+            and wordlist_attack_config.reveal_credentials
+        )
+        or (
+            password_spray_config
+            and password_spray_config.reveal_credentials
+        )
+    )
+    if reveal_credentials:
+        if execution_mode != "aggressive_lab":
+            raise ValueError(
+                "Plaintext credential reporting requires "
+                "execution_mode=aggressive_lab."
+            )
+        if not target_url:
+            raise ValueError(
+                "Plaintext credential reporting requires an HTTP(S) target URL."
+            )
+        validate_lab_url(target_url)
+    if wordlist_attack_config:
+        wordlist_attack_config = replace(
+            wordlist_attack_config,
+            reveal_credentials=reveal_credentials,
+        )
+    if password_spray_config:
+        password_spray_config = replace(
+            password_spray_config,
+            reveal_credentials=reveal_credentials,
+        )
     autonomous_identity_enabled = False
     if target_url and use_llm and execution_mode == "aggressive_lab":
         try:
@@ -2147,6 +2212,7 @@ def run_campaign(
         "identity_output_root": identity_output_root
         or Path("reports/redteam_campaign/identity_agents"),
         "autonomous_identity_enabled": autonomous_identity_enabled,
+        "reveal_credentials": reveal_credentials,
         "wordlist_attack_config": wordlist_attack_config,
         "password_spray_config": password_spray_config,
         "ports": ports or (default_ports_for_target(target) if target else []),
@@ -2197,6 +2263,15 @@ def run_campaign(
         ]
         if final_state.get("normalized_evidence"):
             final_state["report"] = f"{final_state.get('report', '')}\n\n## Normalized Findings\n{render_findings_table(final_state['normalized_evidence'])}"
+        credential_section = render_revealed_credentials_section(
+            final_state.get("wordlist_attack"),
+            final_state.get("password_spray"),
+        )
+        if credential_section:
+            final_state["report"] = (
+                f"{final_state.get('report', '').rstrip()}\n\n"
+                f"{credential_section}"
+            )
         elapsed = time.perf_counter() - started
         return CampaignRun(
             goal=goal,
@@ -2410,6 +2485,17 @@ def save_campaign_run(run: CampaignRun, output_dir: Path) -> dict[str, Path]:
     json_path = output_dir / f"redteam_campaign_{stamp}.json"
     md_path = output_dir / f"redteam_campaign_{stamp}.md"
     payload = asdict(run)
+    contains_plaintext_credentials = bool(
+        collect_revealed_credentials(
+            payload.get("wordlist_attack"),
+            payload.get("password_spray"),
+        )
+    )
+    if contains_plaintext_credentials:
+        json_path.touch(mode=0o600, exist_ok=True)
+        md_path.touch(mode=0o600, exist_ok=True)
+        json_path.chmod(0o600)
+        md_path.chmod(0o600)
     json_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
     md_path.write_text(
         render_campaign_markdown(
@@ -2418,4 +2504,7 @@ def save_campaign_run(run: CampaignRun, output_dir: Path) -> dict[str, Path]:
         ),
         encoding="utf-8",
     )
+    if contains_plaintext_credentials:
+        json_path.chmod(0o600)
+        md_path.chmod(0o600)
     return {"json": json_path, "markdown": md_path}

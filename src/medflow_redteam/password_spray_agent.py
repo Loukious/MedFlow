@@ -51,6 +51,7 @@ class PasswordSprayConfig:
     verify_tls: bool = True
     execution_mode: str = "safe"
     execute: bool = False
+    reveal_credentials: bool = False
     trace_path: Path | None = None
 
 
@@ -151,9 +152,17 @@ class PasswordSprayAgent:
                             "status": attempt.get("status"),
                             "proof": (
                                 "The configured success status and response signal matched. "
-                                "No credential or token value was retained."
+                                + (
+                                    "The accepted lab password was retained because explicit "
+                                    "plaintext credential reporting was enabled. No response "
+                                    "value or session token was retained."
+                                    if self.config.reveal_credentials
+                                    else "No credential or token value was retained."
+                                )
                             ),
                         }
+                        if self.config.reveal_credentials:
+                            success["password"] = password
                         successes.append(success)
                         if len(successes) >= self.config.stop_after_successes:
                             stop_reason = "success_threshold_reached"
@@ -194,6 +203,9 @@ class PasswordSprayAgent:
             "attempted": len(attempts),
             "successful": len(successes),
             "successes": successes,
+            "plaintext_credentials_retained": bool(
+                successes and self.config.reveal_credentials
+            ),
             "outcome_counts": counts,
             "stop_reason": stop_reason,
             "lockout_detected": stop_reason == "lockout_or_rate_limit_detected",

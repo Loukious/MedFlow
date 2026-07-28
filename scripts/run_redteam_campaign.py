@@ -9,9 +9,11 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from medflow_graph.memory import GraphStore, ingest_campaign_report
 from medflow_redteam.campaign import CampaignRun, run_campaign, save_campaign_run
+from medflow_redteam.credential_reporting import collect_revealed_credentials
 from medflow_redteam.password_spray_agent import (
     DEFAULT_PASSWORD_WORDLISTS as DEFAULT_SPRAY_PASSWORD_WORDLISTS,
     DEFAULT_USERNAME_WORDLISTS,
@@ -107,6 +109,30 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
         ]
     )
     console.print(Panel(summary, title="Campaign Summary"))
+
+    credentials = collect_revealed_credentials(
+        run.wordlist_attack,
+        run.password_spray,
+    )
+    if credentials:
+        console.print(
+            "[bold red]Sensitive lab output:[/bold red] accepted plaintext "
+            "credentials were retained by explicit request."
+        )
+        credential_table = Table(
+            "Attack",
+            "Identity",
+            "Password",
+            "Endpoint",
+        )
+        for credential in credentials:
+            credential_table.add_row(
+                credential["attack"],
+                Text(credential["username"]),
+                Text(credential["password"], style="bold yellow"),
+                Text(credential["endpoint"]),
+            )
+        console.print(credential_table)
 
     agent_table = Table("Agent", "Tools", "Handoff")
     for agent in run.agents:
@@ -318,6 +344,15 @@ def main() -> None:
     parser.add_argument("--spray-max-passwords", type=int, default=3)
     parser.add_argument("--spray-max-attempts", type=int, default=30)
     parser.add_argument("--spray-delay", type=float, default=0.5)
+    parser.add_argument(
+        "--reveal-credentials",
+        action="store_true",
+        help=(
+            "Print accepted synthetic lab credentials and retain them in owner-only "
+            "campaign JSON/Markdown artifacts. Requires a private --url and "
+            "--execution-mode aggressive_lab."
+        ),
+    )
     parser.add_argument("--execute-recon", action="store_true", help="Let the Reconnaissance Agent run active allowlisted probes.")
     parser.add_argument("--execute-validation", action="store_true", help="Select and run matching capability validation tools after recon.")
     parser.add_argument("--max-capabilities", type=int, default=5, help="Maximum matching validation capabilities to execute.")
@@ -368,6 +403,12 @@ def main() -> None:
         parser.error(
             "Active credential agents require --execution-mode aggressive_lab."
         )
+    if args.reveal_credentials and not args.target_url:
+        parser.error("--reveal-credentials requires --url.")
+    if args.reveal_credentials and args.execution_mode != "aggressive_lab":
+        parser.error(
+            "--reveal-credentials requires --execution-mode aggressive_lab."
+        )
     login_headers = {}
     for item in args.login_header:
         if ":" not in item:
@@ -400,6 +441,7 @@ def main() -> None:
             delay_seconds=args.wordlist_delay,
             execution_mode=args.execution_mode,
             execute=True,
+            reveal_credentials=args.reveal_credentials,
             trace_path=identity_trace_dir / f"wordlist_attempts_{stamp}.jsonl",
         )
         if args.wordlist_attack
@@ -433,6 +475,7 @@ def main() -> None:
             delay_seconds=args.spray_delay,
             execution_mode=args.execution_mode,
             execute=True,
+            reveal_credentials=args.reveal_credentials,
             trace_path=identity_trace_dir
             / f"password_spray_attempts_{stamp}.jsonl",
         )
@@ -467,6 +510,7 @@ def main() -> None:
         identity_output_root=identity_trace_dir,
         wordlist_attack_config=wordlist_config,
         password_spray_config=password_spray_config,
+        reveal_credentials=args.reveal_credentials,
     )
     saved = save_campaign_run(run, Path(args.output_dir))
     graph_update = None

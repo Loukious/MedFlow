@@ -128,6 +128,9 @@ class RedTeamCoreTests(unittest.TestCase):
             "local_qwen",
         )
         self.assertFalse(CampaignRequest(goal="authorized lab test").stateful_api)
+        self.assertFalse(
+            CampaignRequest(goal="authorized lab test").reveal_credentials
+        )
         self.assertEqual(ToolsmithCreateRequest(id="observer").provider, "gpt_oss")
         self.assertEqual(ToolQualityStateRequest(state="shadow", reason="fixture reviewed").state, "shadow")
         self.assertEqual(ToolQualityOutcomeRequest(outcome="tool_error").outcome, "tool_error")
@@ -161,6 +164,18 @@ class RedTeamCoreTests(unittest.TestCase):
                 target_url="http://127.0.0.1:3000/",
                 password_spray={"endpoint": "/login"},
             )
+        with self.assertRaises(ValidationError):
+            CampaignRequest(
+                goal="Reveal without a URL.",
+                execution_mode="aggressive_lab",
+                reveal_credentials=True,
+            )
+        with self.assertRaises(ValidationError):
+            CampaignRequest(
+                goal="Reveal in safe mode.",
+                target_url="http://127.0.0.1:3000/",
+                reveal_credentials=True,
+            )
         request = CampaignRequest(
             goal="Authorized identity lab.",
             target_url="http://127.0.0.1:3000/",
@@ -175,9 +190,11 @@ class RedTeamCoreTests(unittest.TestCase):
                 "max_users": 3,
                 "max_passwords": 2,
             },
+            reveal_credentials=True,
         )
         self.assertEqual(request.wordlist_attack.max_passwords, 100)
         self.assertEqual(request.password_spray.max_attempts, 30)
+        self.assertTrue(request.reveal_credentials)
 
     def test_campaign_llm_routes_authorization_without_caller_agent_selection(self) -> None:
         response = json.dumps(

@@ -94,6 +94,7 @@ class CampaignRequest(BaseModel):
     stateful_api: bool = False
     stateful_max_requests: int = Field(default=40, ge=1, le=200)
     stateful_max_workflows: int = Field(default=8, ge=1, le=30)
+    reveal_credentials: bool = False
     wordlist_attack: WordlistAttackRequest | None = None
     password_spray: PasswordSprayRequest | None = None
 
@@ -110,6 +111,18 @@ class CampaignRequest(BaseModel):
         ) and self.execution_mode != "aggressive_lab":
             raise ValueError(
                 "Active credential testing requires execution_mode=aggressive_lab."
+            )
+        if self.reveal_credentials and not self.target_url:
+            raise ValueError(
+                "Plaintext credential reporting requires an explicit target_url."
+            )
+        if (
+            self.reveal_credentials
+            and self.execution_mode != "aggressive_lab"
+        ):
+            raise ValueError(
+                "Plaintext credential reporting requires "
+                "execution_mode=aggressive_lab."
             )
         return self
 

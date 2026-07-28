@@ -24,6 +24,7 @@ from .authorization_agent import (
     build_inline_prompt_document,
     run_inline_authorization_assessment,
 )
+from .campaign_report import render_campaign_markdown
 from .command_planner import plan_recon_strategy, plan_validation_strategy
 from .evidence import (
     normalize_authorization_evidence,
@@ -2410,98 +2411,11 @@ def save_campaign_run(run: CampaignRun, output_dir: Path) -> dict[str, Path]:
     md_path = output_dir / f"redteam_campaign_{stamp}.md"
     payload = asdict(run)
     json_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    md_path.write_text(render_campaign_markdown(payload), encoding="utf-8")
-    return {"json": json_path, "markdown": md_path}
-
-
-def render_campaign_markdown(payload: dict[str, Any]) -> str:
-    lines = [
-        "# MedFlow Red-Team Campaign Run",
-        "",
-        f"- Goal: {payload.get('goal')}",
-        (
-            f"- Target: {payload.get('target_url') or payload.get('target') or 'tabletop / no live target'}"
+    md_path.write_text(
+        render_campaign_markdown(
+            payload,
+            artifact_paths={"json": json_path.name},
         ),
-        f"- Provider: {payload.get('provider')}",
-        f"- Elapsed seconds: {payload.get('elapsed_seconds'):.2f}",
-        "",
-        "## Capability Validation",
-        json.dumps(payload.get("capability_validation") or {"status": "not run"}, indent=2),
-        "",
-        "## Campaign Routing",
-        json.dumps(payload.get("campaign_routing") or {"status": "not run"}, indent=2),
-        "",
-        "## Authorization Assessment",
-        json.dumps(payload.get("authorization_assessment") or {"status": "not run"}, indent=2),
-        "",
-        "## Password Wordlist Validation",
-        json.dumps(payload.get("wordlist_attack") or {"status": "not run"}, indent=2),
-        "",
-        "## Password Spray Validation",
-        json.dumps(payload.get("password_spray") or {"status": "not run"}, indent=2),
-        "",
-        "## Recon Strategy",
-        json.dumps(payload.get("recon_strategy") or {"status": "not run"}, indent=2),
-        "",
-        "## Validation Strategy",
-        json.dumps(payload.get("validation_strategy") or {"status": "not run"}, indent=2),
-        "",
-        "## Closed-Loop Summary",
-        json.dumps(payload.get("loop_summary") or {"status": "not enabled"}, indent=2),
-        "",
-        "## Normalized Findings",
-        render_findings_table(payload.get("normalized_evidence") or []),
-        "",
-        "## Campaign Phases",
-        *[
-            f"- **{phase.get('phase')}**: `{phase.get('status')}` - {phase.get('evidence', '')}"
-            for phase in payload.get("phases", [])
-        ],
-        "",
-        "## Tool Timeline",
-        *[
-            f"- **{item.get('tool')}** `{item.get('status')}`: {item.get('evidence', '')[:500]}"
-            for item in payload.get("tool_timeline", [])
-        ],
-        "",
-        "## Graph Memory",
-        json.dumps(payload.get("graph_memory") or {"status": "not used"}, indent=2),
-        "",
-        "## Web Route Discovery",
-        json.dumps(payload.get("web_routes") or {"status": "not run"}, indent=2),
-        "",
-        "## Web Fingerprint",
-        json.dumps(payload.get("web_fingerprint") or {"status": "not run"}, indent=2),
-        "",
-        "## Web Control Checks",
-        json.dumps(payload.get("web_checks") or {"status": "not run"}, indent=2),
-        "",
-        "## Web Application Assessment",
-        json.dumps(payload.get("web_assessment") or {"status": "not run"}, indent=2),
-        "",
-        "## Steps",
-        *[f"- {step}" for step in payload.get("steps", [])],
-        "",
-        "## Agents",
-    ]
-    for agent in payload.get("agents", []):
-        lines.extend(
-            [
-                f"### {agent.get('role')}",
-                f"Objective: {agent.get('objective')}",
-                "",
-                "Tools:",
-                *[f"- {item}" for item in agent.get("tools", [])],
-                "",
-                "Decisions:",
-                *[f"- {item}" for item in agent.get("decisions", [])],
-                "",
-                "Outputs:",
-                *[f"- {item}" for item in agent.get("outputs", [])],
-                "",
-                f"Handoff: {agent.get('handoff', '')}",
-                "",
-            ]
-        )
-    lines.extend(["## Report", payload.get("report", ""), ""])
-    return "\n".join(lines)
+        encoding="utf-8",
+    )
+    return {"json": json_path, "markdown": md_path}

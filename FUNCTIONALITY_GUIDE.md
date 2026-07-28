@@ -734,6 +734,18 @@ Campaign JSON and debug exports include `campaign_routing` and `authorization_as
 request and response evidence is stored under the campaign output directory's `authorization`
 subdirectory.
 
+Every saved campaign now has two deliberately different report artifacts:
+
+- `redteam_campaign_<timestamp>.md` is the human review view. It presents the outcome, deterministic
+  result counts, findings with evidence and remediation, specialist assessment tables, phases,
+  concise tool activity, knowledge sources, and artifact locations. Sections that did not run are
+  omitted instead of appearing as raw JSON.
+- `redteam_campaign_<timestamp>.json` is the full audit record. It retains complete structured
+  payloads, the original model narrative, tool traces, and provider output needed for debugging.
+
+Authorization pass/fail totals in the Markdown are calculated from the individual structured test
+results rather than copied from model-written summary text.
+
 ## 19. Wordlist And Password-Spray Agents
 
 Two active LangGraph specialists support explicitly authorized local lab testing:

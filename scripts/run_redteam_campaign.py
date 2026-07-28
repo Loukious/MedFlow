@@ -95,6 +95,7 @@ def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_t
             f"Services observed: {len(run.services)}",
             f"Web routes found: {web_route_label(run)}",
             f"Authorization assessment: {authorization_label(run)}",
+            f"Authentication discovery: {authentication_discovery_label(run)}",
             f"Password wordlist: {wordlist_label(run)}",
             f"Password spray: {password_spray_label(run)}",
             f"Graph memory hits: {len((run.graph_memory or {}).get('hits', []))}",
@@ -212,6 +213,17 @@ def authorization_label(run: CampaignRun) -> str:
     return f"{status}, posture={posture or 'n/a'}, requests={requests}"
 
 
+def authentication_discovery_label(run: CampaignRun) -> str:
+    discovery = run.authentication_discovery or {}
+    if not discovery:
+        return "not requested"
+    contract = discovery.get("contract") or {}
+    return (
+        f"{discovery.get('status', 'unknown')}; "
+        f"endpoint={contract.get('endpoint', 'not discovered')}"
+    )
+
+
 def wordlist_label(run: CampaignRun) -> str:
     result = run.wordlist_attack or {}
     if not result:
@@ -247,7 +259,8 @@ def main() -> None:
         default=None,
         help=(
             "Explicitly authorized HTTP(S) target. The campaign orchestrator autonomously routes "
-            "bounded web/API specialist work."
+            "bounded web/API specialist work. In aggressive_lab mode, an LLM may discover a "
+            "private-lab login contract when the goal explicitly requests credential testing."
         ),
     )
     parser.add_argument("--ports", default=None, help="Comma-separated ports for active reconnaissance.")
@@ -451,6 +464,7 @@ def main() -> None:
         stateful_max_requests=args.stateful_max_requests,
         stateful_max_workflows=args.stateful_max_workflows,
         authorization_output_root=Path(args.output_dir) / "authorization",
+        identity_output_root=identity_trace_dir,
         wordlist_attack_config=wordlist_config,
         password_spray_config=password_spray_config,
     )

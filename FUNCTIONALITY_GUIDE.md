@@ -739,6 +739,7 @@ subdirectory.
 Two active LangGraph specialists support explicitly authorized local lab testing:
 
 ```text
+src/medflow_redteam/auth_contract_agent.py
 src/medflow_redteam/wordlist_attack_agent.py
 src/medflow_redteam/password_spray_agent.py
 src/medflow_redteam/lab_http.py
@@ -752,12 +753,17 @@ The Password Spray Agent works round by round: it tries one candidate password a
 identity set before moving to the next password. This produces a low-and-wide pattern rather than
 the Wordlist Agent's concentrated failures against one account.
 
-Both agents share the same authentication oracle. The login contract is configuration, not Juice
-Shop logic: callers supply the same-origin endpoint, JSON/form field names, identity or username
-template, expected statuses, and optional success JSON paths. Traces retain the username and
-password wordlist position, never the plaintext password, response values, or session token.
-Execution requires explicit enablement and `aggressive_lab`; public targets are rejected by the lab
-CIDR allowlist.
+Both agents share the same authentication oracle. The login contract is not Juice Shop logic. In a
+regular LLM campaign, the Authentication Contract Agent passively inspects same-origin forms,
+scripts, API descriptions, response headers, and a bounded set of LLM-selected GET paths. It
+accepts an endpoint, request format, field names, static fields, custom headers, status codes, and
+response signals only when they are supported by the campaign prompt or observed target evidence.
+Manual CLI/API contract fields remain available as explicit overrides.
+
+Traces retain the username and password wordlist position, never the plaintext password, response
+values, custom header values, or session token. Execution requires `aggressive_lab`, an LLM-enabled
+campaign, an objective that explicitly requests the credential test, and a target accepted by the
+private-lab CIDR allowlist.
 
 Download or refresh the sparse official SecLists checkout:
 
@@ -796,7 +802,24 @@ Run the agents directly:
   --execution-mode aggressive_lab --execute
 ```
 
-Run both through the regular campaign:
+Run both through the regular campaign with autonomous contract discovery:
+
+```bash
+.venv/bin/python scripts/run_redteam_campaign.py \
+  "Run an authorized wordlist attack and password spray against the isolated lab using the synthetic identity one-synthetic-user@example.test" \
+  --url http://127.0.0.1:3000/ \
+  --execution-mode aggressive_lab \
+  --provider local_qwen \
+  --report --traces
+```
+
+The prompt supplies the one identity authorized for the concentrated wordlist test. The LLM decides
+whether to route the two credential specialists and discovers the endpoint, fields, request format,
+username template, and response signals. If the target does not expose enough evidence, the agent
+returns `missing_prerequisite` instead of guessing.
+
+For deterministic replay or an application that does not expose its login contract, pass manual
+overrides:
 
 ```bash
 .venv/bin/python scripts/run_redteam_campaign.py \
@@ -839,6 +862,24 @@ directory's `identity_agents` subdirectory and are also exposed through campaign
   }
 }
 ```
+
+The PDF-style authorization assessment and credential testing share the regular Campaign
+Orchestrator but remain separate specialist workflows. Authorization headers such as
+`x-user-id: 301` and `x-user-role: patient` are supplied identity material; arbitrary custom names
+or valid values cannot be recovered from a generic `401` response. Put those supplied facts in the
+campaign prompt (or a future secret-store context), while leaving route selection, header
+variations, response interpretation, verdicts, and reporting to the LLM. For example:
+
+```bash
+.venv/bin/python scripts/run_redteam_campaign.py \
+  "Run an authorized black-box authorization assessment. Use the supplied baseline identity headers x-user-id: 301 and x-user-role: patient; autonomously discover and test applicable object and function boundaries." \
+  --url https://authorized-assignment-target.example \
+  --provider local_qwen \
+  --report --traces
+```
+
+Public assignment targets can use the bounded authorization subworkflow. Active wordlist and spray
+execution remains private-lab-only.
 
 To reproduce the isolated Juice Shop benchmark, start the internal lab, enter only its network
 namespace, run the fixture, and stop it:

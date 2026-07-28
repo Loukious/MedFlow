@@ -6,7 +6,11 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
+from medflow_redteam.auth_contract_agent import (
+    discover_authentication_contract,
+)
 from medflow_redteam.lab_http import load_wordlist, validate_lab_url
 from medflow_redteam.password_spray_agent import (
     PasswordSprayAgent,
@@ -22,6 +26,28 @@ from medflow_ti.embeddings import _local_model_path
 class LabHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         return
+
+    def do_GET(self) -> None:
+        if self.path == "/":
+            body = b"""
+            <html><body>
+              <form method="post" action="/login">
+                <input name="email" type="email">
+                <input name="password" type="password">
+              </form>
+            </body></html>
+            """
+            status = 200
+            content_type = "text/html"
+        else:
+            body = b'{"error":"Not found"}'
+            status = 404
+            content_type = "application/json"
+        self.send_response(status)
+        self.send_header("content-type", content_type)
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self) -> None:
         length = int(self.headers.get("content-length", "0"))
@@ -211,6 +237,98 @@ class IdentityAttackAgentTests(unittest.TestCase):
             self.assertEqual(result["attempted"], 1)
             self.assertEqual(result["status"], "lockout_observed")
             self.assertTrue(result["lockout_detected"])
+
+    @patch("medflow_redteam.auth_contract_agent.call_redteam_llm")
+    def test_llm_discovers_auth_contract_from_evidence_and_prompt(
+        self,
+        complete,
+    ) -> None:
+        complete.side_effect = [
+            json.dumps({"additional_paths": [], "reasoning": "Form observed."}),
+            json.dumps(
+                {
+                    "endpoint": "/login",
+                    "method": "POST",
+                    "request_format": "form",
+                    "username_field": "email",
+                    "password_field": "password",
+                    "static_fields": {},
+                    "headers": {},
+                    "success_statuses": [200],
+                    "failure_statuses": [400, 401, 403],
+                    "success_json_paths": [],
+                    "wordlist_identity": "test@medflow.test",
+                    "username_template": "{username}@medflow.test",
+                    "confidence": "high",
+                    "reasoning": "The HTML form supplies the contract.",
+                }
+            ),
+        ]
+        discovery = discover_authentication_contract(
+            (
+                "Run an authorized wordlist and password-spray assessment using "
+                "the synthetic identity test@medflow.test."
+            ),
+            self.url,
+            provider="local_qwen",
+            require_wordlist_identity=True,
+        )
+        self.assertEqual(discovery.status, "ready")
+        self.assertIsNotNone(discovery.contract)
+        assert discovery.contract is not None
+        self.assertEqual(discovery.contract.endpoint, "/login")
+        self.assertEqual(discovery.contract.username_field, "email")
+        self.assertEqual(discovery.contract.password_field, "password")
+        self.assertEqual(
+            discovery.contract.wordlist_identity,
+            "test@medflow.test",
+        )
+        self.assertEqual(
+            discovery.contract.username_template,
+            "{username}@medflow.test",
+        )
+
+    @patch("medflow_redteam.auth_contract_agent.call_redteam_llm")
+    def test_auth_contract_rejects_invented_identity_and_header_values(
+        self,
+        complete,
+    ) -> None:
+        complete.side_effect = [
+            json.dumps({"additional_paths": []}),
+            json.dumps(
+                {
+                    "endpoint": "/login",
+                    "method": "POST",
+                    "request_format": "form",
+                    "username_field": "email",
+                    "password_field": "password",
+                    "static_fields": {},
+                    "headers": {"X-Admin": "true"},
+                    "success_statuses": [200],
+                    "failure_statuses": [401],
+                    "success_json_paths": [],
+                    "wordlist_identity": "invented@example.test",
+                    "username_template": "{username}@example.test",
+                    "confidence": "high",
+                    "reasoning": "Invented values should be rejected.",
+                }
+            ),
+        ]
+        discovery = discover_authentication_contract(
+            "Run an authorized wordlist assessment.",
+            self.url,
+            provider="local_qwen",
+            require_wordlist_identity=True,
+        )
+        self.assertEqual(discovery.status, "partial")
+        self.assertIsNotNone(discovery.contract)
+        assert discovery.contract is not None
+        self.assertEqual(discovery.contract.headers, {})
+        self.assertEqual(discovery.contract.wordlist_identity, "")
+        self.assertIn(
+            "A wordlist attack requires one explicitly authorized identity in the campaign prompt.",
+            discovery.missing_prerequisites,
+        )
 
 
 if __name__ == "__main__":

@@ -16,7 +16,8 @@ For the Milestone 2 red-team framework comparison, see `REDTEAM_FRAMEWORK_COMPAR
 - Optional local Qwen inference through llama.cpp's OpenAI-compatible server.
 - GPT-OSS 120B is the default model. Override it with `GPT_OSS_MODEL` when needed.
 - Optional Kaggle healthcare cybersecurity dataset download and ingestion.
-- Bounded SecLists password-wordlist and lockout-aware password-spray agents for local labs.
+- LLM-discovered authentication contracts with bounded SecLists wordlist and lockout-aware
+  password-spray agents for private labs.
 - CLI and Streamlit UI.
 
 ## Setup

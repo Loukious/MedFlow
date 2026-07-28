@@ -19,6 +19,7 @@ from medflow_ti.config import Settings, load_settings
 from medflow_ti.llm import LLMError, is_llm_api_error
 from medflow_graph.memory import GraphStore
 
+from .auth_contract_agent import discover_authentication_contract
 from .authorization_agent import (
     build_inline_prompt_document,
     run_inline_authorization_assessment,
@@ -33,6 +34,7 @@ from .evidence import (
     normalize_wordlist_attack_evidence,
     render_findings_table,
 )
+from .lab_http import validate_lab_url
 from .password_spray_agent import (
     PasswordSprayAgent,
     PasswordSprayConfig,
@@ -94,6 +96,7 @@ class CampaignRun:
     web_checks: dict[str, Any] | None = None
     web_assessment: dict[str, Any] | None = None
     authorization_assessment: dict[str, Any] | None = None
+    authentication_discovery: dict[str, Any] | None = None
     wordlist_attack: dict[str, Any] | None = None
     password_spray: dict[str, Any] | None = None
     campaign_routing: dict[str, Any] | None = None
@@ -124,6 +127,8 @@ class CampaignState(TypedDict, total=False):
     authorization_output_root: Path
     authorization_request_budget: int
     authorization_tool_rounds: int
+    identity_output_root: Path
+    autonomous_identity_enabled: bool
     wordlist_attack_config: WordlistAttackConfig | None
     password_spray_config: PasswordSprayConfig | None
     ports: list[int]
@@ -141,6 +146,7 @@ class CampaignState(TypedDict, total=False):
     web_checks: dict[str, Any]
     web_assessment: dict[str, Any]
     authorization_assessment: dict[str, Any]
+    authentication_discovery: dict[str, Any]
     wordlist_attack: dict[str, Any]
     password_spray: dict[str, Any]
     campaign_routing: dict[str, Any]
@@ -464,6 +470,10 @@ def compact_reporting_draft(state: CampaignState) -> dict[str, Any]:
             state.get("authorization_assessment", {}),
             1_200,
         ),
+        "authentication_discovery": truncate_value(
+            state.get("authentication_discovery", {}),
+            1_200,
+        ),
         "wordlist_attack": truncate_value(
             state.get("wordlist_attack", {}),
             1_200,
@@ -531,6 +541,11 @@ def plan_campaign_routing(
     state: CampaignState,
     settings: Settings,
 ) -> dict[str, Any]:
+    autonomous_identity_available = bool(
+        state.get("autonomous_identity_enabled")
+        and state.get("target_url")
+        and state.get("use_llm", True)
+    )
     fallback_agents = [
         "reconnaissance",
         "identity_attack",
@@ -590,8 +605,20 @@ Select specialists from the objective and target type. Select authorization_asse
 objective requests or reasonably includes access-control testing and the explicit URL permits
 same-origin HTTP evidence collection. Do not select it for a network-only target or a goal that
 clearly excludes web authorization. A broad web/API security assessment may include it.
-Select wordlist_attack or password_spray only when its corresponding execution configuration is
-present; the caller's configuration is the explicit authorization gate for these active stages.
+Select wordlist_attack and/or password_spray when the objective explicitly requests that credential
+test and either a manual execution configuration is present or autonomous authentication-contract
+discovery is available. Do not infer permission for credential testing from a generic web test.
+The aggressive-lab execution mode and private target allowlist remain the non-LLM authorization
+gate.
+
+Manual wordlist configuration present:
+{"yes" if state.get("wordlist_attack_config") else "no"}
+
+Manual password-spray configuration present:
+{"yes" if state.get("password_spray_config") else "no"}
+
+Autonomous authentication-contract discovery available:
+{"yes" if autonomous_identity_available else "no"}
 
 Return only one JSON object:
 {{
@@ -649,6 +676,17 @@ Return only one JSON object:
             and "password_spray" not in selected_agents
         ):
             selected_agents.append("password_spray")
+        if not autonomous_identity_available:
+            if (
+                not state.get("wordlist_attack_config")
+                and "wordlist_attack" in selected_agents
+            ):
+                selected_agents.remove("wordlist_attack")
+            if (
+                not state.get("password_spray_config")
+                and "password_spray" in selected_agents
+            ):
+                selected_agents.remove("password_spray")
         if "reporting" not in selected_agents:
             selected_agents.append("reporting")
         return {
@@ -1107,9 +1145,232 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             ],
         }
 
+    def authentication_contract_agent(state: CampaignState) -> CampaignState:
+        wants_wordlist = campaign_agent_selected(state, "wordlist_attack")
+        wants_spray = campaign_agent_selected(state, "password_spray")
+        missing_wordlist = wants_wordlist and not state.get(
+            "wordlist_attack_config"
+        )
+        missing_spray = wants_spray and not state.get(
+            "password_spray_config"
+        )
+        if not (missing_wordlist or missing_spray):
+            return {
+                "steps": append_step(
+                    state,
+                    "authentication contract discovery was not needed",
+                )
+            }
+
+        target_url = str(state.get("target_url") or "")
+        if not state.get("autonomous_identity_enabled") or not target_url:
+            public = {
+                "status": "blocked_by_safety_policy",
+                "generated_by": "policy_gate",
+                "confidence": "low",
+                "contract": None,
+                "evidence": [],
+                "missing_prerequisites": [
+                    "Autonomous credential testing requires an LLM-enabled private URL "
+                    "campaign in aggressive_lab mode."
+                ],
+                "reasoning": "",
+            }
+            return {
+                "authentication_discovery": public,
+                "steps": append_step(
+                    state,
+                    "authentication contract discovery was blocked by its execution gate",
+                ),
+                "phases": append_phase(
+                    state,
+                    "authentication contract discovery",
+                    "blocked_by_safety_policy",
+                    public["missing_prerequisites"][0],
+                ),
+                "tool_timeline": append_timeline(
+                    state,
+                    "authentication_contract_agent",
+                    target_url,
+                    "blocked_by_safety_policy",
+                    json.dumps(public, indent=2),
+                ),
+            }
+
+        discovery = discover_authentication_contract(
+            state["goal"],
+            target_url,
+            provider=state.get("provider", "gpt_oss"),
+            require_wordlist_identity=missing_wordlist,
+        )
+        public = discovery.public_result()
+        wordlist_config = state.get("wordlist_attack_config")
+        spray_config = state.get("password_spray_config")
+        contract = discovery.contract
+        trace_root = state.get(
+            "identity_output_root",
+            Path("reports/redteam_campaign/identity_agents"),
+        )
+        trace_stamp = (
+            f"{time.strftime('%Y%m%d-%H%M%S')}-"
+            f"{time.time_ns() % 1_000_000_000:09d}"
+        )
+        if contract and missing_wordlist and contract.wordlist_identity:
+            wordlist_config = WordlistAttackConfig(
+                target_url=target_url,
+                endpoint=contract.endpoint,
+                username=contract.wordlist_identity,
+                username_field=contract.username_field,
+                password_field=contract.password_field,
+                request_format=contract.request_format,
+                static_fields=dict(contract.static_fields),
+                headers=dict(contract.headers),
+                success_statuses=contract.success_statuses,
+                failure_statuses=contract.failure_statuses,
+                success_json_paths=contract.success_json_paths,
+                execution_mode=state.get("execution_mode", "safe"),
+                execute=True,
+                trace_path=trace_root
+                / f"wordlist_attempts_{trace_stamp}.jsonl",
+            )
+        if contract and missing_spray:
+            spray_config = PasswordSprayConfig(
+                target_url=target_url,
+                endpoint=contract.endpoint,
+                username_template=contract.username_template,
+                username_field=contract.username_field,
+                password_field=contract.password_field,
+                request_format=contract.request_format,
+                static_fields=dict(contract.static_fields),
+                headers=dict(contract.headers),
+                success_statuses=contract.success_statuses,
+                failure_statuses=contract.failure_statuses,
+                success_json_paths=contract.success_json_paths,
+                execution_mode=state.get("execution_mode", "safe"),
+                execute=True,
+                trace_path=trace_root
+                / f"password_spray_attempts_{trace_stamp}.jsonl",
+            )
+
+        output = agent_to_dict(
+            AgentOutput(
+                role="Authentication Contract Agent",
+                objective=(
+                    "Discover the authorized lab login contract before credential "
+                    "validation without submitting credentials during discovery."
+                ),
+                tools=[
+                    "bounded same-origin HTTP inspector",
+                    "HTML form and API-description parser",
+                    f"{state.get('provider', 'gpt_oss')} evidence reasoner",
+                ],
+                decisions=[
+                    "Accept only endpoints, fields, and headers grounded in prompt or target evidence.",
+                    "Treat a wordlist identity as a supplied prerequisite rather than a guess.",
+                    "Keep target response content and header values out of the campaign summary.",
+                ],
+                outputs=[
+                    f"Discovery status: {public['status']}",
+                    (
+                        f"Login endpoint: {public.get('contract', {}).get('endpoint')}"
+                        if public.get("contract")
+                        else "No executable login contract"
+                    ),
+                    (
+                        "Missing prerequisites: "
+                        + ", ".join(public.get("missing_prerequisites") or [])
+                        if public.get("missing_prerequisites")
+                        else "No missing prerequisites"
+                    ),
+                ],
+                handoff=(
+                    "The wordlist and password-spray agents receive only the validated "
+                    "runtime contract."
+                ),
+                evidence=public,
+            )
+        )
+        phase_status = {
+            "ready": "success",
+            "partial": "inconclusive",
+            "missing_prerequisite": "inconclusive",
+            "tool_error": "tool_error",
+        }.get(public["status"], "ran_no_finding")
+        return {
+            "authentication_discovery": public,
+            "wordlist_attack_config": wordlist_config,
+            "password_spray_config": spray_config,
+            "agents": [*state.get("agents", []), output],
+            "steps": append_step(
+                state,
+                "authentication contract agent completed evidence-grounded discovery",
+            ),
+            "phases": append_phase(
+                state,
+                "authentication contract discovery",
+                phase_status,
+                (
+                    f"status={public['status']}; "
+                    f"resources={len(public.get('evidence') or [])}; "
+                    f"missing={len(public.get('missing_prerequisites') or [])}."
+                ),
+            ),
+            "tool_traces": [
+                *state.get("tool_traces", []),
+                make_trace(
+                    "authentication_contract_agent",
+                    target_url,
+                    json.dumps(public, indent=2),
+                ),
+            ],
+            "tool_timeline": append_timeline(
+                state,
+                "authentication_contract_agent",
+                target_url,
+                phase_status,
+                json.dumps(public, indent=2),
+            ),
+        }
+
     def wordlist_attack_agent(state: CampaignState) -> CampaignState:
         config = state.get("wordlist_attack_config")
-        if not config or not campaign_agent_selected(state, "wordlist_attack"):
+        selected = campaign_agent_selected(state, "wordlist_attack")
+        if selected and not config:
+            discovery = state.get("authentication_discovery") or {}
+            result = {
+                "agent": "Wordlist Attack Agent",
+                "status": "missing_prerequisite",
+                "target_url": state.get("target_url"),
+                "attempted": 0,
+                "successful": 0,
+                "successes": [],
+                "stop_reason": "authentication_contract_unavailable",
+                "missing_prerequisites": discovery.get(
+                    "missing_prerequisites",
+                    ["No validated authentication contract was available."],
+                ),
+            }
+            return {
+                "wordlist_attack": result,
+                "steps": append_step(
+                    state,
+                    "wordlist attack agent stopped because its authentication prerequisites were unavailable",
+                ),
+                "phases": append_phase(
+                    state,
+                    "password wordlist validation",
+                    "inconclusive",
+                    "; ".join(result["missing_prerequisites"]),
+                ),
+                "tool_timeline": append_timeline(
+                    state,
+                    "wordlist_attack_agent",
+                    str(state.get("target_url") or ""),
+                    "missing_prerequisite",
+                    json.dumps(result, indent=2),
+                ),
+            }
+        if not config or not selected:
             return {
                 "steps": append_step(
                     state,
@@ -1240,7 +1501,43 @@ Focus on AD relationships, risky paths, MFA fatigue, device registration, and de
 
     def password_spray_agent(state: CampaignState) -> CampaignState:
         config = state.get("password_spray_config")
-        if not config or not campaign_agent_selected(state, "password_spray"):
+        selected = campaign_agent_selected(state, "password_spray")
+        if selected and not config:
+            discovery = state.get("authentication_discovery") or {}
+            result = {
+                "agent": "Password Spray Agent",
+                "status": "missing_prerequisite",
+                "target_url": state.get("target_url"),
+                "attempted": 0,
+                "successful": 0,
+                "successes": [],
+                "stop_reason": "authentication_contract_unavailable",
+                "missing_prerequisites": discovery.get(
+                    "missing_prerequisites",
+                    ["No validated authentication contract was available."],
+                ),
+            }
+            return {
+                "password_spray": result,
+                "steps": append_step(
+                    state,
+                    "password spray agent stopped because its authentication prerequisites were unavailable",
+                ),
+                "phases": append_phase(
+                    state,
+                    "password spray validation",
+                    "inconclusive",
+                    "; ".join(result["missing_prerequisites"]),
+                ),
+                "tool_timeline": append_timeline(
+                    state,
+                    "password_spray_agent",
+                    str(state.get("target_url") or ""),
+                    "missing_prerequisite",
+                    json.dumps(result, indent=2),
+                ),
+            }
+        if not config or not selected:
             return {
                 "steps": append_step(
                     state,
@@ -1605,6 +1902,10 @@ Write the final campaign brief with:
     graph.add_node("campaign_orchestrator", campaign_orchestrator)
     graph.add_node("reconnaissance_agent", reconnaissance_agent)
     graph.add_node("capability_validation_agent", capability_validation_agent)
+    graph.add_node(
+        "authentication_contract_agent",
+        authentication_contract_agent,
+    )
     graph.add_node("wordlist_attack_agent", wordlist_attack_agent)
     graph.add_node("identity_attack_agent", identity_attack_agent)
     graph.add_node("password_spray_agent", password_spray_agent)
@@ -1616,7 +1917,11 @@ Write the final campaign brief with:
     graph.add_edge("gather_context", "campaign_orchestrator")
     graph.add_edge("campaign_orchestrator", "reconnaissance_agent")
     graph.add_edge("reconnaissance_agent", "capability_validation_agent")
-    graph.add_edge("capability_validation_agent", "wordlist_attack_agent")
+    graph.add_edge(
+        "capability_validation_agent",
+        "authentication_contract_agent",
+    )
+    graph.add_edge("authentication_contract_agent", "wordlist_attack_agent")
     graph.add_edge("wordlist_attack_agent", "identity_attack_agent")
     graph.add_edge("identity_attack_agent", "password_spray_agent")
     graph.add_edge("password_spray_agent", "web_api_attack_agent")
@@ -1683,6 +1988,34 @@ def deterministic_campaign_report(state: CampaignState, safety_review: str) -> s
                     f"- {item.get('name')}: {item.get('result')} - {item.get('summary', '')}"
                     for item in authorization.get("tests", [])
                 ],
+            ]
+        )
+    authentication_discovery = state.get("authentication_discovery") or {}
+    if authentication_discovery:
+        contract = authentication_discovery.get("contract") or {}
+        lines.extend(
+            [
+                "",
+                "## Authentication Contract Discovery",
+                f"- Status: {authentication_discovery.get('status', 'unknown')}",
+                f"- Endpoint: {contract.get('endpoint', 'not discovered')}",
+                (
+                    "- Request fields: "
+                    f"{contract.get('username_field', 'unknown')}, "
+                    f"{contract.get('password_field', 'unknown')}"
+                ),
+                (
+                    "- Missing prerequisites: "
+                    + (
+                        "; ".join(
+                            authentication_discovery.get(
+                                "missing_prerequisites",
+                                [],
+                            )
+                        )
+                        or "none"
+                    )
+                ),
             ]
         )
     wordlist_result = state.get("wordlist_attack") or {}
@@ -1752,6 +2085,7 @@ def run_campaign(
     authorization_output_root: Path | None = None,
     authorization_request_budget: int = 30,
     authorization_tool_rounds: int = 3,
+    identity_output_root: Path | None = None,
     wordlist_attack_config: WordlistAttackConfig | None = None,
     password_spray_config: PasswordSprayConfig | None = None,
 ) -> CampaignRun:
@@ -1767,6 +2101,13 @@ def run_campaign(
             target_url = None
         else:
             build_inline_prompt_document(goal, target_url)
+    autonomous_identity_enabled = False
+    if target_url and use_llm and execution_mode == "aggressive_lab":
+        try:
+            validate_lab_url(target_url)
+            autonomous_identity_enabled = True
+        except ValueError:
+            autonomous_identity_enabled = False
     for label, config in (
         ("wordlist attack", wordlist_attack_config),
         ("password spray", password_spray_config),
@@ -1802,6 +2143,9 @@ def run_campaign(
             1, min(authorization_request_budget, 50)
         ),
         "authorization_tool_rounds": max(1, min(authorization_tool_rounds, 5)),
+        "identity_output_root": identity_output_root
+        or Path("reports/redteam_campaign/identity_agents"),
+        "autonomous_identity_enabled": autonomous_identity_enabled,
         "wordlist_attack_config": wordlist_attack_config,
         "password_spray_config": password_spray_config,
         "ports": ports or (default_ports_for_target(target) if target else []),
@@ -1817,6 +2161,7 @@ def run_campaign(
         "web_checks": {},
         "web_assessment": {},
         "authorization_assessment": {},
+        "authentication_discovery": {},
         "wordlist_attack": {},
         "password_spray": {},
         "campaign_routing": {},
@@ -1871,6 +2216,9 @@ def run_campaign(
             authorization_assessment=final_state.get(
                 "authorization_assessment"
             ),
+            authentication_discovery=final_state.get(
+                "authentication_discovery"
+            ),
             wordlist_attack=final_state.get("wordlist_attack"),
             password_spray=final_state.get("password_spray"),
             campaign_routing=final_state.get("campaign_routing"),
@@ -1905,6 +2253,7 @@ def run_campaign(
             web_checks={},
             web_assessment={},
             authorization_assessment={},
+            authentication_discovery={},
             wordlist_attack={},
             password_spray={},
             campaign_routing=initial.get("campaign_routing"),

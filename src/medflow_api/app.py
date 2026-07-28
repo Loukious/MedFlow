@@ -309,6 +309,7 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
         stateful_max_requests=request.stateful_max_requests,
         stateful_max_workflows=request.stateful_max_workflows,
         authorization_output_root=Path(request.output_dir) / "authorization",
+        identity_output_root=trace_root,
         wordlist_attack_config=wordlist_config,
         password_spray_config=password_spray_config,
     )

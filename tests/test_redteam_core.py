@@ -212,6 +212,45 @@ class RedTeamCoreTests(unittest.TestCase):
         self.assertTrue(campaign_agent_selected(routed_state, "web_api_attack"))
         self.assertFalse(campaign_agent_selected(routed_state, "identity_attack"))
 
+    def test_campaign_llm_can_route_prompt_requested_autonomous_identity_tests(
+        self,
+    ) -> None:
+        response = json.dumps(
+            {
+                "selected_agents": [
+                    "identity_attack",
+                    "wordlist_attack",
+                    "password_spray",
+                    "reporting",
+                ],
+                "run_authorization_assessment": False,
+                "authorization_reason": "The objective requests credential tests only.",
+            }
+        )
+        state = {
+            "goal": (
+                "Run an authorized wordlist attack and password spray against "
+                "the isolated lab."
+            ),
+            "target": None,
+            "target_url": "http://127.0.0.1:3000/",
+            "provider": "local_qwen",
+            "use_llm": True,
+            "execution_mode": "aggressive_lab",
+            "autonomous_identity_enabled": True,
+            "wordlist_attack_config": None,
+            "password_spray_config": None,
+        }
+        with patch(
+            "medflow_redteam.campaign.call_redteam_llm",
+            return_value=response,
+        ):
+            routing = plan_campaign_routing(state, SimpleNamespace())
+
+        self.assertIn("wordlist_attack", routing["selected_agents"])
+        self.assertIn("password_spray", routing["selected_agents"])
+        self.assertEqual(routing["generated_by"], "llm:local_qwen")
+
     def test_campaign_without_llm_does_not_launch_llm_subworkflow(self) -> None:
         routing = plan_campaign_routing(
             {

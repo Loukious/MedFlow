@@ -16,6 +16,7 @@ RAW_SECTIONS = [
     "web_assessment",
     "campaign_routing",
     "authorization_assessment",
+    "authentication_discovery",
     "wordlist_attack",
     "password_spray",
     "capability_selection",

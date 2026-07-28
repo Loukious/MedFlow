@@ -98,6 +98,9 @@ Answer with concise sections:
         gpt_oss_model=settings.gpt_oss_model,
         llama_model=settings.llama_model,
         qwen_model=settings.qwen_model,
+        local_qwen_base_url=settings.local_qwen_base_url,
+        local_qwen_model=settings.local_qwen_model,
+        local_qwen_api_key=settings.local_qwen_api_key,
     )
     try:
         answer = llm.generate(prompt)
@@ -115,11 +118,12 @@ def provider_label(provider: str) -> str:
         "llama": "Llama 3.1 8B",
         "qwen": "Qwen 3 32B",
         "groq": "Qwen 3 32B",
+        "local_qwen": "Local Qwen 3.6 35B-A3B",
     }.get(provider, provider)
 
 
 def context_budget(provider: str) -> tuple[int, int]:
-    if provider in {"qwen", "groq"}:
+    if provider in {"qwen", "groq", "local_qwen"}:
         return 550, 4200
     return 1400, 12000
 

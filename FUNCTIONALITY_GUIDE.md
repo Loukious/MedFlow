@@ -115,7 +115,8 @@ gpu: NVIDIA GeForce RTX 3050 Laptop GPU
 
 ## 4. LLM Provider Integration
 
-Groq-hosted GPT-OSS 120B, Llama 3.1 8B, and Qwen 3 32B are used only for the agent answer generation layer. GPT-OSS 120B is the default.
+Groq-hosted GPT-OSS 120B, Llama 3.1 8B, and Qwen are supported alongside local
+Qwen inference through llama.cpp. GPT-OSS 120B is the default.
 
 Code:
 
@@ -148,6 +149,10 @@ How it works:
 - Qwen defaults to Qwen 3.6 27B using model ID `qwen/qwen3.6-27b`.
 - Model IDs can be overridden with `GPT_OSS_MODEL`, `LLAMA_MODEL`, and `QWEN_MODEL`.
 - Qwen uses a smaller context budget to stay friendlier to free-tier token limits.
+- `local_qwen` uses an OpenAI-compatible llama.cpp endpoint. Start it with
+  `.venv/bin/python scripts/run_local_qwen_server.py`; configure it with
+  `LOCAL_QWEN_BASE_URL`, `LOCAL_QWEN_MODEL`, `LOCAL_QWEN_GGUF`, and
+  `LLAMA_CPP_SERVER`.
 - If the selected LLM is quota-limited or unavailable, the app returns retrieved MITRE evidence instead of crashing.
 
 ## 5. The Two Agents
@@ -518,6 +523,9 @@ python scripts/search_kb.py "test" --results 1
 
 The app will still return retrieved evidence when Groq is unavailable, but full narrative answers require valid API quota for the selected model.
 
+Local Qwen does not use Groq quota. Its llama.cpp server must be running and
+healthy at `LOCAL_QWEN_BASE_URL`.
+
 ### GPU not detected
 
 Run:
@@ -725,3 +733,129 @@ The REST API uses the same interface:
 Campaign JSON and debug exports include `campaign_routing` and `authorization_assessment`. Detailed
 request and response evidence is stored under the campaign output directory's `authorization`
 subdirectory.
+
+## 19. Wordlist And Password-Spray Agents
+
+Two active LangGraph specialists support explicitly authorized local lab testing:
+
+```text
+src/medflow_redteam/wordlist_attack_agent.py
+src/medflow_redteam/password_spray_agent.py
+src/medflow_redteam/lab_http.py
+```
+
+The Wordlist Attack Agent tests many candidate passwords against one explicitly configured
+identity. It stops when one credential is accepted or when it sees a lockout/rate-limit response,
+three consecutive transport/server errors, or its attempt budget.
+
+The Password Spray Agent works round by round: it tries one candidate password across the bounded
+identity set before moving to the next password. This produces a low-and-wide pattern rather than
+the Wordlist Agent's concentrated failures against one account.
+
+Both agents share the same authentication oracle. The login contract is configuration, not Juice
+Shop logic: callers supply the same-origin endpoint, JSON/form field names, identity or username
+template, expected statuses, and optional success JSON paths. Traces retain the username and
+password wordlist position, never the plaintext password, response values, or session token.
+Execution requires explicit enablement and `aggressive_lab`; public targets are rejected by the lab
+CIDR allowlist.
+
+Download or refresh the sparse official SecLists checkout:
+
+```bash
+.venv/bin/python scripts/download_redteam_wordlists.py
+.venv/bin/python scripts/download_redteam_wordlists.py --update
+```
+
+The checkout is stored under ignored `data/wordlists/SecLists`. The downloader records the exact
+Git commit, and each run records SHA-256 hashes for the files it used.
+The sparse checkout contains `top-usernames-shortlist.txt`,
+`xato-net-10-million-passwords-1000.txt`, `10k-most-common.txt`, and
+`top-20-common-SSH-passwords.txt`.
+For API safety, configured wordlist files must resolve inside `data/wordlists`; place custom lab
+lists there instead of pointing the service at arbitrary filesystem paths.
+
+Run the agents directly:
+
+```bash
+.venv/bin/python scripts/run_wordlist_attack_agent.py \
+  http://127.0.0.1:3000/ \
+  --endpoint /login \
+  --username one-synthetic-user@example.test \
+  --username-field email \
+  --success-json-path authentication.token \
+  --max-passwords 100 --max-attempts 100 \
+  --execution-mode aggressive_lab --execute
+
+.venv/bin/python scripts/run_password_spray_agent.py \
+  http://127.0.0.1:3000/ \
+  --endpoint /login \
+  --username-field email \
+  --username-template '{username}@synthetic.test' \
+  --success-json-path authentication.token \
+  --max-users 3 --max-passwords 2 --max-attempts 6 \
+  --execution-mode aggressive_lab --execute
+```
+
+Run both through the regular campaign:
+
+```bash
+.venv/bin/python scripts/run_redteam_campaign.py \
+  "Compare wordlist and password-spray resistance in the authorized identity lab" \
+  --url http://127.0.0.1:3000/ \
+  --wordlist-attack --wordlist-username one-synthetic-user@example.test \
+  --wordlist-max-passwords 100 --wordlist-max-attempts 100 \
+  --password-spray \
+  --login-endpoint /login \
+  --login-username-field email \
+  --username-template '{username}@synthetic.test' \
+  --login-success-json-path authentication.token \
+  --spray-max-users 3 --spray-max-passwords 2 --spray-max-attempts 6 \
+  --execution-mode aggressive_lab
+```
+
+The REST API accepts equivalent nested `wordlist_attack` and `password_spray` objects on
+`POST /campaigns`. Complete per-request JSONL traces are written under the campaign output
+directory's `identity_agents` subdirectory and are also exposed through campaign debug exports.
+
+```json
+{
+  "goal": "Compare authorized lab credential controls",
+  "target_url": "http://127.0.0.1:3000/",
+  "execution_mode": "aggressive_lab",
+  "wordlist_attack": {
+    "endpoint": "/login",
+    "username": "one-synthetic-user@example.test",
+    "username_field": "email",
+    "success_json_paths": ["authentication.token"],
+    "max_passwords": 100
+  },
+  "password_spray": {
+    "endpoint": "/login",
+    "username_template": "{username}@synthetic.test",
+    "username_field": "email",
+    "success_json_paths": ["authentication.token"],
+    "max_users": 3,
+    "max_passwords": 2
+  }
+}
+```
+
+To reproduce the isolated Juice Shop benchmark, start the internal lab, enter only its network
+namespace, run the fixture, and stop it:
+
+```bash
+sudo .venv/bin/python scripts/manage_web_training_labs.py up juice_shop --use-sudo
+LAB_PID=$(sudo docker inspect -f '{{.State.Pid}}' medflow-training-juice-shop)
+LAB_IP=$(sudo docker inspect -f \
+  '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' \
+  medflow-training-juice-shop)
+sudo nsenter -t "$LAB_PID" -n .venv/bin/python \
+  scripts/benchmark_identity_attack_agents.py --url "http://${LAB_IP}:3000/"
+sudo .venv/bin/python scripts/manage_web_training_labs.py down juice_shop --use-sudo
+```
+
+The benchmark-specific seeding code creates disposable synthetic accounts from the first three
+username entries and the second password entry. The two production agents remain generic and have
+no Juice Shop-specific credential logic. The expected evidence shows the Wordlist Agent advancing
+password positions for one username, while the Spray Agent advances usernames before moving to the
+next password.

@@ -9,6 +9,7 @@ data/capability_sources/
 data/graph/
 data/generated_tools/
 data/labs/
+data/wordlists/
 data/web_appsec_sources/
 data/vulhub_success_suite.json
 scripts/local/

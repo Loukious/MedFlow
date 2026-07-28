@@ -20,6 +20,9 @@ class Settings:
     gpt_oss_model: str = "openai/gpt-oss-120b"
     llama_model: str = "llama-3.1-8b-instant"
     qwen_model: str = "qwen/qwen3.6-27b"
+    local_qwen_model: str = "qwen-local"
+    local_qwen_base_url: str = "http://127.0.0.1:8080/v1"
+    local_qwen_api_key: str = "local"
     groq_api_key: str | None = None
 
 
@@ -35,4 +38,10 @@ def load_settings() -> Settings:
         gpt_oss_model=os.getenv("GPT_OSS_MODEL", "openai/gpt-oss-120b"),
         llama_model=os.getenv("LLAMA_MODEL", "llama-3.1-8b-instant"),
         qwen_model=os.getenv("QWEN_MODEL", "qwen/qwen3.6-27b"),
+        local_qwen_model=os.getenv("LOCAL_QWEN_MODEL", "qwen-local"),
+        local_qwen_base_url=os.getenv(
+            "LOCAL_QWEN_BASE_URL",
+            "http://127.0.0.1:8080/v1",
+        ),
+        local_qwen_api_key=os.getenv("LOCAL_QWEN_API_KEY", "local"),
     )

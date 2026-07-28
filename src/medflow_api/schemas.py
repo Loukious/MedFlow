@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 
-Provider = Literal["gpt_oss", "llama", "qwen"]
+Provider = Literal["gpt_oss", "llama", "qwen", "local_qwen"]
 ExecutionMode = Literal["safe", "aggressive_lab"]
 MetasploitAction = Literal["plan", "check", "exploit"]
 ToolQualityState = Literal["candidate", "fixture_passed", "shadow", "trusted", "degraded", "quarantined"]
@@ -19,6 +19,53 @@ class WebAuthContextRequest(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     cookies: dict[str, str] = Field(default_factory=dict)
     owned_object_ids: list[str] = Field(default_factory=list)
+
+
+class WordlistAttackRequest(BaseModel):
+    endpoint: str = Field(..., min_length=1)
+    username: str = Field(..., min_length=1)
+    password_wordlist_paths: list[str] = Field(default_factory=list, max_length=10)
+    username_field: str = "username"
+    password_field: str = "password"
+    request_format: Literal["json", "form"] = "json"
+    static_fields: dict[str, Any] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    success_statuses: list[int] = Field(default_factory=lambda: [200], max_length=10)
+    failure_statuses: list[int] = Field(
+        default_factory=lambda: [400, 401, 403],
+        max_length=10,
+    )
+    success_json_paths: list[str] = Field(default_factory=list, max_length=10)
+    max_passwords: int = Field(default=100, ge=1, le=1_000)
+    max_attempts: int = Field(default=100, ge=1, le=1_000)
+    delay_seconds: float = Field(default=0.25, ge=0, le=30)
+    timeout_seconds: float = Field(default=5.0, ge=0.2, le=30)
+    verify_tls: bool = True
+
+
+class PasswordSprayRequest(BaseModel):
+    endpoint: str = Field(..., min_length=1)
+    username_wordlist_paths: list[str] = Field(default_factory=list, max_length=10)
+    password_wordlist_paths: list[str] = Field(default_factory=list, max_length=10)
+    username_template: str = "{username}"
+    username_field: str = "username"
+    password_field: str = "password"
+    request_format: Literal["json", "form"] = "json"
+    static_fields: dict[str, Any] = Field(default_factory=dict)
+    headers: dict[str, str] = Field(default_factory=dict)
+    success_statuses: list[int] = Field(default_factory=lambda: [200], max_length=10)
+    failure_statuses: list[int] = Field(
+        default_factory=lambda: [400, 401, 403],
+        max_length=10,
+    )
+    success_json_paths: list[str] = Field(default_factory=list, max_length=10)
+    max_users: int = Field(default=10, ge=1, le=50)
+    max_passwords: int = Field(default=3, ge=1, le=10)
+    max_attempts: int = Field(default=30, ge=1, le=100)
+    delay_seconds: float = Field(default=0.5, ge=0, le=30)
+    stop_after_successes: int = Field(default=1, ge=1, le=20)
+    timeout_seconds: float = Field(default=5.0, ge=0.2, le=30)
+    verify_tls: bool = True
 
 
 class CampaignRequest(BaseModel):
@@ -47,11 +94,23 @@ class CampaignRequest(BaseModel):
     stateful_api: bool = False
     stateful_max_requests: int = Field(default=40, ge=1, le=200)
     stateful_max_workflows: int = Field(default=8, ge=1, le=30)
+    wordlist_attack: WordlistAttackRequest | None = None
+    password_spray: PasswordSprayRequest | None = None
 
     @model_validator(mode="after")
     def validate_scope(self) -> "CampaignRequest":
         if self.target and self.target_url:
             raise ValueError("Supply either target or target_url, not both.")
+        if (self.wordlist_attack or self.password_spray) and not self.target_url:
+            raise ValueError(
+                "Wordlist and password-spray agents require an explicit target_url."
+            )
+        if (
+            self.wordlist_attack or self.password_spray
+        ) and self.execution_mode != "aggressive_lab":
+            raise ValueError(
+                "Active credential testing requires execution_mode=aggressive_lab."
+            )
         return self
 
 

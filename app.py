@@ -41,6 +41,7 @@ with st.sidebar:
             "GPT-OSS 120B": "gpt_oss",
             "Llama 3.1 8B": "llama",
             "Qwen 3 32B": "qwen",
+            "Local Qwen 3.6 35B-A3B": "local_qwen",
         }
         provider_label = st.selectbox("LLM Provider", list(provider_options))
         provider = provider_options[provider_label]

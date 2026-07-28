@@ -4,6 +4,8 @@ groq
 langgraph
 llama-index-core
 llama-index-llms-groq
+llama-index-llms-openai-like
+openai
 python-dotenv
 rich
 pandas
@@ -13,4 +15,5 @@ pypdf
 fastapi
 uvicorn[standard]
 pymetasploit3
+httpx
 schemathesis>=4.24,<5

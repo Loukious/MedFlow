@@ -13,7 +13,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Send your own prompt to a MedFlow agent.")
     parser.add_argument("agent", choices=sorted(AGENTS), help="Agent to ask.")
     parser.add_argument("prompt", nargs="*", help="Prompt text. Omit for interactive mode.")
-    parser.add_argument("--provider", choices=["gpt_oss", "llama", "qwen"], default="gpt_oss", help="LLM provider/model to use.")
+    parser.add_argument(
+        "--provider",
+        choices=["gpt_oss", "llama", "qwen", "local_qwen"],
+        default="gpt_oss",
+        help="LLM provider/model to use.",
+    )
     parser.add_argument("--results", type=int, default=8, help="Number of retrieved sources.")
     parser.add_argument("--sources", action="store_true", help="Show retrieved source rows.")
     args = parser.parse_args()

@@ -108,7 +108,25 @@ class RedTeamCoreTests(unittest.TestCase):
         )
         self.assertEqual(qwen.reasoning_effort, "none")
         self.assertTrue(qwen.user_only)
+        local_qwen = make_llm(
+            "local_qwen",
+            None,
+            "llama-3.1-8b-instant",
+            "qwen/qwen3.6-27b",
+            "openai/gpt-oss-120b",
+            local_qwen_base_url="http://127.0.0.1:8080/v1",
+            local_qwen_model="qwen-local",
+        )
+        self.assertEqual(local_qwen.model, "qwen-local")
+        self.assertEqual(local_qwen.base_url, "http://127.0.0.1:8080/v1")
         self.assertEqual(CampaignRequest(goal="authorized lab test").provider, "gpt_oss")
+        self.assertEqual(
+            CampaignRequest(
+                goal="authorized local model test",
+                provider="local_qwen",
+            ).provider,
+            "local_qwen",
+        )
         self.assertFalse(CampaignRequest(goal="authorized lab test").stateful_api)
         self.assertEqual(ToolsmithCreateRequest(id="observer").provider, "gpt_oss")
         self.assertEqual(ToolQualityStateRequest(state="shadow", reason="fixture reviewed").state, "shadow")
@@ -127,6 +145,39 @@ class RedTeamCoreTests(unittest.TestCase):
                 target="127.0.0.1",
                 target_url="https://lab.example/",
             )
+
+    def test_active_identity_agents_require_url_and_aggressive_spray_mode(self) -> None:
+        with self.assertRaises(ValidationError):
+            CampaignRequest(
+                goal="Missing URL.",
+                wordlist_attack={
+                    "endpoint": "/login",
+                    "username": "synthetic-user",
+                },
+            )
+        with self.assertRaises(ValidationError):
+            CampaignRequest(
+                goal="Spray in safe mode.",
+                target_url="http://127.0.0.1:3000/",
+                password_spray={"endpoint": "/login"},
+            )
+        request = CampaignRequest(
+            goal="Authorized identity lab.",
+            target_url="http://127.0.0.1:3000/",
+            execution_mode="aggressive_lab",
+            wordlist_attack={
+                "endpoint": "/login",
+                "username": "synthetic-user",
+                "max_passwords": 100,
+            },
+            password_spray={
+                "endpoint": "/login",
+                "max_users": 3,
+                "max_passwords": 2,
+            },
+        )
+        self.assertEqual(request.wordlist_attack.max_passwords, 100)
+        self.assertEqual(request.password_spray.max_attempts, 30)
 
     def test_campaign_llm_routes_authorization_without_caller_agent_selection(self) -> None:
         response = json.dumps(
@@ -186,6 +237,18 @@ class RedTeamCoreTests(unittest.TestCase):
             "capability_validation",
             validation_routing["selected_agents"],
         )
+        identity_routing = plan_campaign_routing(
+            {
+                "goal": "Authorized identity validation.",
+                "target_url": "http://127.0.0.1:3000/",
+                "wordlist_attack_config": object(),
+                "password_spray_config": object(),
+                "use_llm": False,
+            },
+            SimpleNamespace(),
+        )
+        self.assertIn("wordlist_attack", identity_routing["selected_agents"])
+        self.assertIn("password_spray", identity_routing["selected_agents"])
 
     def test_authorization_findings_join_normalized_campaign_evidence(self) -> None:
         evidence = normalize_authorization_evidence(

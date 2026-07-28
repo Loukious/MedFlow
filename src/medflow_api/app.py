@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
@@ -10,9 +11,18 @@ from medflow_graph.memory import GraphStore, ingest_campaign_report
 from medflow_redteam.campaign import run_campaign, save_campaign_run
 from medflow_redteam.config_loader import ROOT
 from medflow_redteam.debug import build_campaign_debug, load_campaign_payload
+from medflow_redteam.password_spray_agent import (
+    DEFAULT_PASSWORD_WORDLISTS as DEFAULT_SPRAY_PASSWORD_WORDLISTS,
+    DEFAULT_USERNAME_WORDLISTS,
+    PasswordSprayConfig,
+)
 from medflow_redteam.toolsmith import ToolsmithAgent
 from medflow_redteam.tool_quality import list_quality_entries, record_quality_outcome, set_quality_state
 from medflow_redteam.web_app import WebAuthContext
+from medflow_redteam.wordlist_attack_agent import (
+    DEFAULT_PASSWORD_WORDLISTS as DEFAULT_WORDLIST_PASSWORD_WORDLISTS,
+    WordlistAttackConfig,
+)
 
 from .jobs import JobManager, job_to_dict
 from .schemas import (
@@ -187,6 +197,86 @@ def tool_cache_record_outcome(reference: str, request: ToolQualityOutcomeRequest
 
 
 def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
+    trace_stamp = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}"
+    trace_root = Path(request.output_dir) / "identity_agents"
+    wordlist_config = None
+    if request.wordlist_attack and request.target_url:
+        wordlist_config = WordlistAttackConfig(
+            target_url=request.target_url,
+            endpoint=request.wordlist_attack.endpoint,
+            username=request.wordlist_attack.username,
+            password_wordlist_paths=[
+                Path(path)
+                for path in (
+                    request.wordlist_attack.password_wordlist_paths
+                    or [
+                        str(path)
+                        for path in DEFAULT_WORDLIST_PASSWORD_WORDLISTS
+                    ]
+                )
+            ],
+            username_field=request.wordlist_attack.username_field,
+            password_field=request.wordlist_attack.password_field,
+            request_format=request.wordlist_attack.request_format,
+            static_fields=request.wordlist_attack.static_fields,
+            headers=request.wordlist_attack.headers,
+            success_statuses=tuple(request.wordlist_attack.success_statuses),
+            failure_statuses=tuple(request.wordlist_attack.failure_statuses),
+            success_json_paths=tuple(
+                request.wordlist_attack.success_json_paths
+            ),
+            max_passwords=request.wordlist_attack.max_passwords,
+            max_attempts=request.wordlist_attack.max_attempts,
+            delay_seconds=request.wordlist_attack.delay_seconds,
+            timeout_seconds=request.wordlist_attack.timeout_seconds,
+            verify_tls=request.wordlist_attack.verify_tls,
+            execution_mode=request.execution_mode,
+            execute=True,
+            trace_path=trace_root / f"wordlist_attempts_{trace_stamp}.jsonl",
+        )
+    password_spray_config = None
+    if request.password_spray and request.target_url:
+        password_spray_config = PasswordSprayConfig(
+            target_url=request.target_url,
+            endpoint=request.password_spray.endpoint,
+            username_wordlist_paths=[
+                Path(path)
+                for path in (
+                    request.password_spray.username_wordlist_paths
+                    or [str(path) for path in DEFAULT_USERNAME_WORDLISTS]
+                )
+            ],
+            password_wordlist_paths=[
+                Path(path)
+                for path in (
+                    request.password_spray.password_wordlist_paths
+                    or [
+                        str(path)
+                        for path in DEFAULT_SPRAY_PASSWORD_WORDLISTS
+                    ]
+                )
+            ],
+            username_template=request.password_spray.username_template,
+            username_field=request.password_spray.username_field,
+            password_field=request.password_spray.password_field,
+            request_format=request.password_spray.request_format,
+            static_fields=request.password_spray.static_fields,
+            headers=request.password_spray.headers,
+            success_statuses=tuple(request.password_spray.success_statuses),
+            failure_statuses=tuple(request.password_spray.failure_statuses),
+            success_json_paths=tuple(request.password_spray.success_json_paths),
+            max_users=request.password_spray.max_users,
+            max_passwords=request.password_spray.max_passwords,
+            max_attempts=request.password_spray.max_attempts,
+            delay_seconds=request.password_spray.delay_seconds,
+            stop_after_successes=request.password_spray.stop_after_successes,
+            timeout_seconds=request.password_spray.timeout_seconds,
+            verify_tls=request.password_spray.verify_tls,
+            execution_mode=request.execution_mode,
+            execute=True,
+            trace_path=trace_root
+            / f"password_spray_attempts_{trace_stamp}.jsonl",
+        )
     run = run_campaign(
         goal=request.goal,
         target=request.target,
@@ -219,6 +309,8 @@ def run_campaign_job(request: CampaignRequest) -> dict[str, Any]:
         stateful_max_requests=request.stateful_max_requests,
         stateful_max_workflows=request.stateful_max_workflows,
         authorization_output_root=Path(request.output_dir) / "authorization",
+        wordlist_attack_config=wordlist_config,
+        password_spray_config=password_spray_config,
     )
     saved = save_campaign_run(run, Path(request.output_dir))
     payload = asdict(run)

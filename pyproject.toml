@@ -14,6 +14,8 @@ dependencies = [
   "langgraph",
   "llama-index-core",
   "llama-index-llms-groq",
+  "llama-index-llms-openai-like",
+  "openai",
   "python-dotenv",
   "rich",
   "pandas",
@@ -24,6 +26,7 @@ dependencies = [
   "uvicorn[standard]",
   "pymetasploit3",
   "playwright",
+  "httpx",
   "schemathesis>=4.24,<5",
 ]
 

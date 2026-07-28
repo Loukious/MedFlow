@@ -13,8 +13,10 @@ For the Milestone 2 red-team framework comparison, see `REDTEAM_FRAMEWORK_COMPAR
 - `actor_db`: intrusion sets, malware, tools, campaigns, and their mapped TTPs.
 - `detection_db`: MITRE analytics, detection strategies, data sources, mitigations, and healthcare notes.
 - Groq-hosted GPT-OSS 120B, Llama 3.1 8B, and Qwen 3 32B clients using the `.env` key `GROQ_API_KEY` (or `GroqAPIKey`).
+- Optional local Qwen inference through llama.cpp's OpenAI-compatible server.
 - GPT-OSS 120B is the default model. Override it with `GPT_OSS_MODEL` when needed.
 - Optional Kaggle healthcare cybersecurity dataset download and ingestion.
+- Bounded SecLists password-wordlist and lockout-aware password-spray agents for local labs.
 - CLI and Streamlit UI.
 
 ## Setup
@@ -64,6 +66,25 @@ python -m medflow_ti.cli ask threat_intel "What is T9999?"
 python -m medflow_ti.cli ask threat_intel "What is T9999?" --provider gpt_oss
 python -m medflow_ti.cli ask threat_intel "What is T9999?" --provider qwen
 ```
+
+To use a cached local Qwen GGUF, start llama.cpp in one terminal:
+
+```bash
+.venv/bin/python scripts/run_local_qwen_server.py
+```
+
+The launcher discovers `~/llama.cpp/build/bin/llama-server` and a cached Qwen GGUF,
+including the WSL CUDA library-path adjustment. Then select it normally:
+
+```bash
+.venv/bin/python scripts/run_redteam_campaign.py \
+  "Run an authorized black-box web/API assessment." \
+  --url https://authorized-lab.example \
+  --provider local_qwen
+```
+
+Override discovery with `LLAMA_CPP_SERVER` and `LOCAL_QWEN_GGUF`. The API endpoint
+and model alias use `LOCAL_QWEN_BASE_URL` and `LOCAL_QWEN_MODEL`.
 
 Or use the small prompt script:
 
@@ -119,3 +140,8 @@ Current ingestion status:
 ## Safety Boundary
 
 The red-team agent is designed for authorized security work and healthcare defense. It can explain ATT&CK concepts, defensive validation paths, and high-level kill chains, but it is prompted not to provide exploit code, credential theft steps, persistence recipes, or instructions that enable real compromise.
+
+Active credential testing is separately gated: the password-spray agent accepts only allowlisted
+local/private lab URLs and requires explicit `aggressive_lab` execution. See
+`FUNCTIONALITY_GUIDE.md` for SecLists setup, standalone commands, campaign/API integration, and the
+isolated Juice Shop benchmark.

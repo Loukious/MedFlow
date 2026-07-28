@@ -7,6 +7,7 @@ from typing import Any
 from llama_index.core.agent import FunctionAgent
 from llama_index.core.tools import FunctionTool
 from llama_index.llms.groq import Groq as LlamaIndexGroq
+from llama_index.llms.openai_like import OpenAILike
 
 from medflow_ti.config import Settings, load_settings
 
@@ -70,15 +71,28 @@ def run_llamaindex_redteam(
         FunctionTool.from_defaults(fn=review_redteam_safety),
     ]
 
-    model, extra_kwargs = _model_for_provider(settings, provider)
-    llm = LlamaIndexGroq(
-        model=model,
-        api_key=settings.groq_api_key,
-        temperature=0.2,
-        max_tokens=1400,
-        timeout=60,
-        additional_kwargs=extra_kwargs,
-    )
+    if provider == "local_qwen":
+        llm = OpenAILike(
+            model=settings.local_qwen_model,
+            api_key=settings.local_qwen_api_key,
+            api_base=settings.local_qwen_base_url,
+            temperature=0.2,
+            max_tokens=1400,
+            timeout=300,
+            context_window=8192,
+            is_chat_model=True,
+            is_function_calling_model=True,
+        )
+    else:
+        model, extra_kwargs = _model_for_provider(settings, provider)
+        llm = LlamaIndexGroq(
+            model=model,
+            api_key=settings.groq_api_key,
+            temperature=0.2,
+            max_tokens=1400,
+            timeout=60,
+            additional_kwargs=extra_kwargs,
+        )
     agent = FunctionAgent(
         name="MedFlowRedTeamComparisonAgent",
         description="Safe red-team planning tool agent for comparing LlamaIndex against LangGraph.",

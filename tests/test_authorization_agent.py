@@ -96,6 +96,73 @@ def valid_plan() -> dict:
 
 
 class AuthorizationAgentTests(unittest.TestCase):
+    def test_local_qwen_uses_openai_compatible_structured_output(self) -> None:
+        captured = {}
+
+        class Message:
+            content = '{"ok":true}'
+
+            def model_dump(self, **_: object) -> dict:
+                return {"role": "assistant", "content": self.content}
+
+        class Completions:
+            @staticmethod
+            def create(**kwargs: object) -> object:
+                captured.update(kwargs)
+                return SimpleNamespace(
+                    choices=[
+                        SimpleNamespace(
+                            message=Message(),
+                            finish_reason="stop",
+                        )
+                    ],
+                    usage=None,
+                )
+
+        settings = SimpleNamespace(
+            groq_api_key=None,
+            local_qwen_model="qwen-local",
+            local_qwen_base_url="http://127.0.0.1:8080/v1",
+            local_qwen_api_key="local",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            run_dir = Path(tmp)
+            with patch(
+                "medflow_redteam.authorization_agent.load_settings",
+                return_value=settings,
+            ):
+                agent = GenericAuthorizationAgent(
+                    prompt_document(run_dir / "scenario.txt"),
+                    EventLogger(run_dir),
+                    provider="local_qwen",
+                )
+            agent.client = SimpleNamespace(
+                chat=SimpleNamespace(completions=Completions())
+            )
+            agent.complete(
+                [{"role": "user", "content": "Return the result."}],
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "result",
+                        "schema": {
+                            "type": "object",
+                            "properties": {"ok": {"type": "boolean"}},
+                            "required": ["ok"],
+                            "additionalProperties": False,
+                        },
+                    },
+                },
+                max_completion_tokens=512,
+                purpose="local_qwen_schema_test",
+            )
+
+        self.assertEqual(agent.backend, "llama.cpp")
+        self.assertEqual(captured["model"], "qwen-local")
+        self.assertEqual(captured["response_format"]["type"], "json_schema")
+        self.assertNotIn("reasoning_format", captured)
+        self.assertNotIn("reasoning_effort", captured)
+
     def test_qwen_uses_prompted_schema_and_json_object_mode(self) -> None:
         captured = {}
 
@@ -714,6 +781,70 @@ class AuthorizationAgentTests(unittest.TestCase):
         self.assertEqual(corrected_tests[0]["result"], "FAIL")
         self.assertIn(
             "Unauthorized",
+            corrected_interpretations[0]["security_significance"],
+        )
+
+    def test_non_failure_audit_cannot_keep_vulnerability_classification(self) -> None:
+        tests = [
+            {
+                "test_id": "anonymous_boundary",
+                "result": "FAIL",
+                "summary": "Route metadata was treated as protected data.",
+                "root_cause": "Route names were public.",
+                "vulnerability_classification": [
+                    {
+                        "name": "Information Disclosure",
+                        "cwe": "CWE-200",
+                        "owasp": "A05:2021",
+                    }
+                ],
+                "remediation": ["Hide route names."],
+            }
+        ]
+        interpretations = [
+            {
+                "action_id": "inspect_root",
+                "observed_behavior": "A public route list was returned.",
+                "authorization_outcome": "allowed",
+                "security_significance": "Route names were treated as sensitive.",
+            }
+        ]
+        audit = {
+            "test_reviews": [
+                {
+                    "test_id": "anonymous_boundary",
+                    "result": "PASS",
+                    "summary": "No protected data was returned, but this text is stale.",
+                    "root_cause": "No authorization failure was observed.",
+                    "vulnerability_classification": [
+                        {
+                            "name": "Information Disclosure",
+                            "cwe": "CWE-200",
+                            "owasp": "A05:2021",
+                        }
+                    ],
+                    "remediation": ["Hide route names."],
+                }
+            ],
+            "action_reviews": [
+                {
+                    "action_id": "inspect_root",
+                    "authorization_outcome": "allowed",
+                    "security_significance": "Contradictory vulnerability prose.",
+                }
+            ],
+        }
+        corrected_tests, corrected_interpretations = apply_verdict_audit(
+            tests,
+            interpretations,
+            audit,
+            expected_test_ids=["anonymous_boundary"],
+            expected_action_ids=["inspect_root"],
+        )
+        self.assertEqual(corrected_tests[0]["result"], "PASS")
+        self.assertEqual(corrected_tests[0]["vulnerability_classification"], [])
+        self.assertNotIn(
+            "Contradictory",
             corrected_interpretations[0]["security_significance"],
         )
 

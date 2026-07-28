@@ -26,10 +26,16 @@ from .authorization_agent import (
 from .command_planner import plan_recon_strategy, plan_validation_strategy
 from .evidence import (
     normalize_authorization_evidence,
+    normalize_password_spray_evidence,
     normalize_validation_evidence,
     normalize_web_assessment_evidence,
     normalize_web_evidence,
+    normalize_wordlist_attack_evidence,
     render_findings_table,
+)
+from .password_spray_agent import (
+    PasswordSprayAgent,
+    PasswordSprayConfig,
 )
 from .tools import (
     ToolResult,
@@ -47,6 +53,10 @@ from .tools import (
     web_route_discovery,
 )
 from .web_app import WebAuthContext, run_web_assessment
+from .wordlist_attack_agent import (
+    WordlistAttackAgent,
+    WordlistAttackConfig,
+)
 
 
 @dataclass
@@ -84,6 +94,8 @@ class CampaignRun:
     web_checks: dict[str, Any] | None = None
     web_assessment: dict[str, Any] | None = None
     authorization_assessment: dict[str, Any] | None = None
+    wordlist_attack: dict[str, Any] | None = None
+    password_spray: dict[str, Any] | None = None
     campaign_routing: dict[str, Any] | None = None
     normalized_evidence: list[dict[str, Any]] = field(default_factory=list)
     loop_summary: dict[str, Any] | None = None
@@ -112,6 +124,8 @@ class CampaignState(TypedDict, total=False):
     authorization_output_root: Path
     authorization_request_budget: int
     authorization_tool_rounds: int
+    wordlist_attack_config: WordlistAttackConfig | None
+    password_spray_config: PasswordSprayConfig | None
     ports: list[int]
     tcp: dict[str, Any]
     nmap_result: ToolResult
@@ -127,6 +141,8 @@ class CampaignState(TypedDict, total=False):
     web_checks: dict[str, Any]
     web_assessment: dict[str, Any]
     authorization_assessment: dict[str, Any]
+    wordlist_attack: dict[str, Any]
+    password_spray: dict[str, Any]
     campaign_routing: dict[str, Any]
     normalized_evidence: list[dict[str, Any]]
     loop_summary: dict[str, Any]
@@ -299,6 +315,12 @@ High-level campaign goal:
 Explicit web target URL:
 {state.get("target_url") or "none"}
 
+Configured one-account password-wordlist execution:
+{"yes" if state.get("wordlist_attack_config") else "no"}
+
+Configured password-spray execution:
+{"yes" if state.get("password_spray_config") else "no"}
+
 Observed services:
 {compact_services(state.get("services", []))}
 
@@ -442,6 +464,14 @@ def compact_reporting_draft(state: CampaignState) -> dict[str, Any]:
             state.get("authorization_assessment", {}),
             1_200,
         ),
+        "wordlist_attack": truncate_value(
+            state.get("wordlist_attack", {}),
+            1_200,
+        ),
+        "password_spray": truncate_value(
+            state.get("password_spray", {}),
+            1_200,
+        ),
         "graph_memory_hits": [
             {
                 "type": hit.get("type"),
@@ -510,6 +540,10 @@ def plan_campaign_routing(
     ]
     if state.get("execute_validation"):
         fallback_agents.append("capability_validation")
+    if state.get("wordlist_attack_config"):
+        fallback_agents.append("wordlist_attack")
+    if state.get("password_spray_config"):
+        fallback_agents.append("password_spray")
     if state.get("target_url") and state.get("use_llm", True):
         fallback_agents.append("authorization_assessment")
     fallback = {
@@ -544,6 +578,8 @@ Available specialists:
 - reconnaissance: attack-surface and service discovery
 - capability_validation: service-specific validation
 - identity_attack: directory, authentication, MFA, and identity paths
+- wordlist_attack: many candidate passwords against one configured lab identity
+- password_spray: lockout-aware common-credential validation on an explicitly configured login
 - web_api_attack: routes, inputs, API behavior, and application vulnerabilities
 - authorization_assessment: bounded same-origin object-level, function-level, role, tenant, and
   session-boundary testing driven by an LLM HTTP planner
@@ -554,6 +590,8 @@ Select specialists from the objective and target type. Select authorization_asse
 objective requests or reasonably includes access-control testing and the explicit URL permits
 same-origin HTTP evidence collection. Do not select it for a network-only target or a goal that
 clearly excludes web authorization. A broad web/API security assessment may include it.
+Select wordlist_attack or password_spray only when its corresponding execution configuration is
+present; the caller's configuration is the explicit authorization gate for these active stages.
 
 Return only one JSON object:
 {{
@@ -573,6 +611,8 @@ Return only one JSON object:
             "reconnaissance",
             "capability_validation",
             "identity_attack",
+            "wordlist_attack",
+            "password_spray",
             "web_api_attack",
             "authorization_assessment",
             "blockchain_security",
@@ -599,6 +639,16 @@ Return only one JSON object:
             and "capability_validation" not in selected_agents
         ):
             selected_agents.append("capability_validation")
+        if (
+            state.get("wordlist_attack_config")
+            and "wordlist_attack" not in selected_agents
+        ):
+            selected_agents.append("wordlist_attack")
+        if (
+            state.get("password_spray_config")
+            and "password_spray" not in selected_agents
+        ):
+            selected_agents.append("password_spray")
         if "reporting" not in selected_agents:
             selected_agents.append("reporting")
         return {
@@ -1057,6 +1107,100 @@ tools used or proposed, and the handoff to identity/web/API/blockchain agents.
             ],
         }
 
+    def wordlist_attack_agent(state: CampaignState) -> CampaignState:
+        config = state.get("wordlist_attack_config")
+        if not config or not campaign_agent_selected(state, "wordlist_attack"):
+            return {
+                "steps": append_step(
+                    state,
+                    "campaign router skipped the wordlist attack agent",
+                )
+            }
+        try:
+            result = WordlistAttackAgent(config).run()
+        except Exception as exc:
+            result = {
+                "agent": "Wordlist Attack Agent",
+                "status": "tool_error",
+                "target_url": config.target_url,
+                "endpoint": config.endpoint,
+                "error": f"{type(exc).__name__}: {exc}",
+                "successes": [],
+            }
+        output = agent_to_dict(
+            AgentOutput(
+                role="Wordlist Attack Agent",
+                objective=(
+                    "Test a bounded password wordlist against one explicitly configured "
+                    "identity on the authorized lab origin."
+                ),
+                tools=[
+                    "SecLists common-credential subset",
+                    "same-origin HTTP authentication client",
+                    "lockout and rate-limit circuit breaker",
+                ],
+                decisions=[
+                    "Reject targets outside the configured local lab allowlist.",
+                    "Stop on the first accepted credential, HTTP 423/429, or the attempt budget.",
+                    "Never retain plaintext passwords, response values, or session tokens.",
+                ],
+                outputs=[
+                    f"{result.get('attempted', 0)} candidate password(s) tested",
+                    f"{result.get('successful', 0)} accepted credential(s)",
+                    f"Complete attempt trace: {result.get('trace_path') or 'not requested'}",
+                ],
+                handoff=(
+                    "Identity and reporting specialists should compare this concentrated "
+                    "attack with the Password Spray Agent's distributed attempt pattern."
+                ),
+                evidence=result,
+            )
+        )
+        status = result.get("status", "tool_error")
+        return {
+            "wordlist_attack": result,
+            "agents": [*state.get("agents", []), output],
+            "steps": append_step(
+                state,
+                "wordlist attack agent completed bounded one-account credential validation",
+            ),
+            "phases": append_phase(
+                state,
+                "password wordlist validation",
+                status,
+                (
+                    f"{result.get('successful', 0)}/{result.get('attempted', 0)} "
+                    f"attempt(s) authenticated; stop={result.get('stop_reason', 'tool_error')}."
+                ),
+            ),
+            "tool_traces": [
+                *state.get("tool_traces", []),
+                make_trace(
+                    "wordlist_attack_agent",
+                    config.target_url,
+                    json.dumps(truncate_value(result, 1_200), indent=2),
+                ),
+            ],
+            "tool_timeline": append_timeline(
+                state,
+                "wordlist_attack_agent",
+                config.target_url,
+                status,
+                json.dumps(
+                    {
+                        "endpoint": result.get("endpoint"),
+                        "attempted": result.get("attempted", 0),
+                        "successful": result.get("successful", 0),
+                        "outcome_counts": result.get("outcome_counts", {}),
+                        "stop_reason": result.get("stop_reason"),
+                        "trace_path": result.get("trace_path"),
+                        "error": result.get("error"),
+                    },
+                    indent=2,
+                ),
+            ),
+        }
+
     def identity_attack_agent(state: CampaignState) -> CampaignState:
         if not campaign_agent_selected(state, "identity_attack"):
             return {
@@ -1092,6 +1236,100 @@ Focus on AD relationships, risky paths, MFA fatigue, device registration, and de
             "agents": [*state.get("agents", []), output],
             "steps": append_step(state, "identity attack agent produced identity validation path"),
             "tool_traces": [*state.get("tool_traces", []), make_trace("identity_attack_agent", state["goal"], json.dumps(output, indent=2))],
+        }
+
+    def password_spray_agent(state: CampaignState) -> CampaignState:
+        config = state.get("password_spray_config")
+        if not config or not campaign_agent_selected(state, "password_spray"):
+            return {
+                "steps": append_step(
+                    state,
+                    "campaign router skipped the password spray agent",
+                )
+            }
+        try:
+            result = PasswordSprayAgent(config).run()
+        except Exception as exc:
+            result = {
+                "agent": "Password Spray Agent",
+                "status": "tool_error",
+                "target_url": config.target_url,
+                "endpoint": config.endpoint,
+                "error": f"{type(exc).__name__}: {exc}",
+                "successes": [],
+            }
+        output = agent_to_dict(
+            AgentOutput(
+                role="Password Spray Agent",
+                objective=(
+                    "Validate common credentials against an explicitly configured lab "
+                    "authentication contract using a bounded spray pattern."
+                ),
+                tools=[
+                    "SecLists username and common-credential subsets",
+                    "same-origin HTTP authentication client",
+                    "lockout and rate-limit circuit breaker",
+                ],
+                decisions=[
+                    "Try one candidate password across identities before advancing.",
+                    "Stop immediately on HTTP 423/429 or the configured success threshold.",
+                    "Never retain plaintext passwords, response values, or session tokens.",
+                ],
+                outputs=[
+                    f"{result.get('attempted', 0)} authentication attempt(s)",
+                    f"{result.get('successful', 0)} accepted credential(s)",
+                    f"Stop reason: {result.get('stop_reason', 'tool error')}",
+                ],
+                handoff=(
+                    "Identity and reporting specialists should map any accepted credential "
+                    "to password policy, MFA, lockout, and detection controls."
+                ),
+                evidence=result,
+            )
+        )
+        status = result.get("status", "tool_error")
+        return {
+            "password_spray": result,
+            "agents": [*state.get("agents", []), output],
+            "steps": append_step(
+                state,
+                "password spray agent completed bounded authentication validation",
+            ),
+            "phases": append_phase(
+                state,
+                "password spray validation",
+                status,
+                (
+                    f"{result.get('successful', 0)}/{result.get('attempted', 0)} "
+                    f"attempt(s) authenticated; stop={result.get('stop_reason', 'tool_error')}."
+                ),
+            ),
+            "tool_traces": [
+                *state.get("tool_traces", []),
+                make_trace(
+                    "password_spray_agent",
+                    config.target_url,
+                    json.dumps(truncate_value(result, 1_200), indent=2),
+                ),
+            ],
+            "tool_timeline": append_timeline(
+                state,
+                "password_spray_agent",
+                config.target_url,
+                status,
+                json.dumps(
+                    {
+                        "endpoint": result.get("endpoint"),
+                        "attempted": result.get("attempted", 0),
+                        "successful": result.get("successful", 0),
+                        "outcome_counts": result.get("outcome_counts", {}),
+                        "stop_reason": result.get("stop_reason"),
+                        "trace_path": result.get("trace_path"),
+                        "error": result.get("error"),
+                    },
+                    indent=2,
+                ),
+            ),
         }
 
     def web_api_attack_agent(state: CampaignState) -> CampaignState:
@@ -1367,7 +1605,9 @@ Write the final campaign brief with:
     graph.add_node("campaign_orchestrator", campaign_orchestrator)
     graph.add_node("reconnaissance_agent", reconnaissance_agent)
     graph.add_node("capability_validation_agent", capability_validation_agent)
+    graph.add_node("wordlist_attack_agent", wordlist_attack_agent)
     graph.add_node("identity_attack_agent", identity_attack_agent)
+    graph.add_node("password_spray_agent", password_spray_agent)
     graph.add_node("web_api_attack_agent", web_api_attack_agent)
     graph.add_node("blockchain_security_agent", blockchain_security_agent)
     graph.add_node("reporting_agent", reporting_agent)
@@ -1376,8 +1616,10 @@ Write the final campaign brief with:
     graph.add_edge("gather_context", "campaign_orchestrator")
     graph.add_edge("campaign_orchestrator", "reconnaissance_agent")
     graph.add_edge("reconnaissance_agent", "capability_validation_agent")
-    graph.add_edge("capability_validation_agent", "identity_attack_agent")
-    graph.add_edge("identity_attack_agent", "web_api_attack_agent")
+    graph.add_edge("capability_validation_agent", "wordlist_attack_agent")
+    graph.add_edge("wordlist_attack_agent", "identity_attack_agent")
+    graph.add_edge("identity_attack_agent", "password_spray_agent")
+    graph.add_edge("password_spray_agent", "web_api_attack_agent")
     graph.add_edge("web_api_attack_agent", "blockchain_security_agent")
     graph.add_edge("blockchain_security_agent", "reporting_agent")
     graph.add_edge("reporting_agent", END)
@@ -1443,6 +1685,30 @@ def deterministic_campaign_report(state: CampaignState, safety_review: str) -> s
                 ],
             ]
         )
+    wordlist_result = state.get("wordlist_attack") or {}
+    if wordlist_result:
+        lines.extend(
+            [
+                "",
+                "## Password Wordlist Validation",
+                f"- Status: {wordlist_result.get('status', 'unknown')}",
+                f"- Attempts: {wordlist_result.get('attempted', 0)}",
+                f"- Accepted credentials: {wordlist_result.get('successful', 0)}",
+                f"- Stop reason: {wordlist_result.get('stop_reason', 'unknown')}",
+            ]
+        )
+    spray_result = state.get("password_spray") or {}
+    if spray_result:
+        lines.extend(
+            [
+                "",
+                "## Password Spray Validation",
+                f"- Status: {spray_result.get('status', 'unknown')}",
+                f"- Attempts: {spray_result.get('attempted', 0)}",
+                f"- Accepted credentials: {spray_result.get('successful', 0)}",
+                f"- Stop reason: {spray_result.get('stop_reason', 'unknown')}",
+            ]
+        )
     evidence = state.get("normalized_evidence", [])
     if evidence:
         lines.extend(["", "## Normalized Findings", render_findings_table(evidence)])
@@ -1486,6 +1752,8 @@ def run_campaign(
     authorization_output_root: Path | None = None,
     authorization_request_budget: int = 30,
     authorization_tool_rounds: int = 3,
+    wordlist_attack_config: WordlistAttackConfig | None = None,
+    password_spray_config: PasswordSprayConfig | None = None,
 ) -> CampaignRun:
     started = time.perf_counter()
     settings = load_settings()
@@ -1499,6 +1767,20 @@ def run_campaign(
             target_url = None
         else:
             build_inline_prompt_document(goal, target_url)
+    for label, config in (
+        ("wordlist attack", wordlist_attack_config),
+        ("password spray", password_spray_config),
+    ):
+        if config and not target_url:
+            raise ValueError(f"{label} configuration requires --url/target_url.")
+        if (
+            config
+            and target_url
+            and config.target_url.rstrip("/") != target_url.rstrip("/")
+        ):
+            raise ValueError(
+                f"{label} target must exactly match the campaign target URL."
+            )
     initial: CampaignState = {
         "goal": goal,
         "target": target,
@@ -1520,6 +1802,8 @@ def run_campaign(
             1, min(authorization_request_budget, 50)
         ),
         "authorization_tool_rounds": max(1, min(authorization_tool_rounds, 5)),
+        "wordlist_attack_config": wordlist_attack_config,
+        "password_spray_config": password_spray_config,
         "ports": ports or (default_ports_for_target(target) if target else []),
         "steps": [],
         "phases": [],
@@ -1533,6 +1817,8 @@ def run_campaign(
         "web_checks": {},
         "web_assessment": {},
         "authorization_assessment": {},
+        "wordlist_attack": {},
+        "password_spray": {},
         "campaign_routing": {},
         "normalized_evidence": [],
         "loop_summary": {},
@@ -1554,6 +1840,12 @@ def run_campaign(
             *normalize_authorization_evidence(
                 final_state.get("authorization_assessment"),
                 target_url=target_url,
+            ),
+            *normalize_wordlist_attack_evidence(
+                final_state.get("wordlist_attack"),
+            ),
+            *normalize_password_spray_evidence(
+                final_state.get("password_spray"),
             ),
             *normalize_validation_evidence(final_state.get("capability_validation")),
         ]
@@ -1579,6 +1871,8 @@ def run_campaign(
             authorization_assessment=final_state.get(
                 "authorization_assessment"
             ),
+            wordlist_attack=final_state.get("wordlist_attack"),
+            password_spray=final_state.get("password_spray"),
             campaign_routing=final_state.get("campaign_routing"),
             capability_selection=final_state.get("capability_selection"),
             capability_validation=final_state.get("capability_validation"),
@@ -1611,6 +1905,8 @@ def run_campaign(
             web_checks={},
             web_assessment={},
             authorization_assessment={},
+            wordlist_attack={},
+            password_spray={},
             campaign_routing=initial.get("campaign_routing"),
             normalized_evidence=[],
             loop_summary={},
@@ -1788,6 +2084,12 @@ def render_campaign_markdown(payload: dict[str, Any]) -> str:
         "",
         "## Authorization Assessment",
         json.dumps(payload.get("authorization_assessment") or {"status": "not run"}, indent=2),
+        "",
+        "## Password Wordlist Validation",
+        json.dumps(payload.get("wordlist_attack") or {"status": "not run"}, indent=2),
+        "",
+        "## Password Spray Validation",
+        json.dumps(payload.get("password_spray") or {"status": "not run"}, indent=2),
         "",
         "## Recon Strategy",
         json.dumps(payload.get("recon_strategy") or {"status": "not run"}, indent=2),

@@ -113,6 +113,64 @@ def normalize_authorization_evidence(
     return evidence
 
 
+def normalize_wordlist_attack_evidence(
+    result: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    evidence = []
+    for success in (result or {}).get("successes", []):
+        evidence.append(
+            {
+                "type": "password_wordlist_attack",
+                "title": "Password from common wordlist accepted",
+                "asset": (result or {}).get("endpoint", ""),
+                "status": "confirmed_vulnerability",
+                "severity": "high",
+                "confidence": "high",
+                "proof_kind": "bounded_authentication_attempt",
+                "safe_summary": (
+                    f"Identity {success.get('username')} authenticated using password "
+                    f"wordlist position {success.get('password_index')}. No password or "
+                    "session token was retained."
+                ),
+                "remediation": (
+                    "Reset the affected lab credential, block common passwords, enforce MFA, "
+                    "and detect repeated failures concentrated on one identity."
+                ),
+                "references": ["CWE-521", "MITRE ATT&CK T1110.001"],
+            }
+        )
+    return evidence
+
+
+def normalize_password_spray_evidence(
+    result: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    evidence = []
+    for success in (result or {}).get("successes", []):
+        evidence.append(
+            {
+                "type": "password_spray",
+                "title": "Common credential accepted by authentication endpoint",
+                "asset": (result or {}).get("endpoint", ""),
+                "status": "confirmed_vulnerability",
+                "severity": "high",
+                "confidence": "high",
+                "proof_kind": "bounded_authentication_attempt",
+                "safe_summary": (
+                    f"Identity {success.get('username')} authenticated using password "
+                    f"wordlist position {success.get('password_index')}. No password or "
+                    "session token was retained."
+                ),
+                "remediation": (
+                    "Reset the affected lab credential, enforce resistant password policy "
+                    "and MFA, and monitor distributed low-rate authentication failures."
+                ),
+                "references": ["CWE-521", "MITRE ATT&CK T1110.003"],
+            }
+        )
+    return evidence
+
+
 def remediation_for_web_finding(finding: dict[str, Any]) -> str:
     finding_type = str(finding.get("type", "")).lower()
     if "sqli" in finding_type:

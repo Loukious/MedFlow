@@ -180,6 +180,9 @@ def call_redteam_llm(prompt: str, settings: Settings, provider: str = "gpt_oss")
         gpt_oss_model=settings.gpt_oss_model,
         llama_model=settings.llama_model,
         qwen_model=settings.qwen_model,
+        local_qwen_base_url=settings.local_qwen_base_url,
+        local_qwen_model=settings.local_qwen_model,
+        local_qwen_api_key=settings.local_qwen_api_key,
         max_completion_tokens=1200,
     )
     return llm.generate(prompt)

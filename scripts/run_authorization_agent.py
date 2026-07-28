@@ -63,7 +63,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--provider",
-        choices=["gpt_oss", "llama", "qwen"],
+        choices=["gpt_oss", "llama", "qwen", "local_qwen"],
         default="gpt_oss",
         help="Groq-hosted reasoning model profile (default: assignment-required GPT-OSS).",
     )

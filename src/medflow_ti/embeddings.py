@@ -20,21 +20,18 @@ def _device() -> str:
 @lru_cache(maxsize=1)
 def model(name: str = "BAAI/bge-base-en-v1.5") -> SentenceTransformer:
     cache_folder = _cache_folder()
-    try:
+    local_path = _local_model_path(name, cache_folder)
+    if local_path:
         return SentenceTransformer(
-            name,
+            str(local_path),
             device=_device(),
-            cache_folder=str(cache_folder) if cache_folder else None,
             local_files_only=True,
         )
-    except Exception:
-        os.environ.pop("HF_HUB_OFFLINE", None)
-        os.environ.pop("TRANSFORMERS_OFFLINE", None)
-        return SentenceTransformer(
-            name,
-            device=_device(),
-            cache_folder=str(cache_folder) if cache_folder else None,
-        )
+    return SentenceTransformer(
+        name,
+        device=_device(),
+        cache_folder=str(cache_folder) if cache_folder else None,
+    )
 
 
 def _cache_folder() -> Path | None:
@@ -47,6 +44,51 @@ def _cache_folder() -> Path | None:
     for candidate in candidates:
         if candidate and Path(candidate).exists():
             return Path(candidate)
+    return None
+
+
+def _local_model_path(name: str, cache_folder: Path | None) -> Path | None:
+    direct = Path(name).expanduser()
+    if direct.is_dir():
+        return direct
+    if cache_folder is None:
+        return None
+    repository = f"models--{name.replace('/', '--')}"
+    for root in (cache_folder, cache_folder / "hub"):
+        model_root = root / repository
+        reference = model_root / "refs" / "main"
+        snapshots = model_root / "snapshots"
+        candidates: list[Path] = []
+        if reference.is_file():
+            revision = reference.read_text(encoding="utf-8").strip()
+            if revision:
+                candidates.append(snapshots / revision)
+        if snapshots.is_dir():
+            candidates.extend(
+                path
+                for path in sorted(
+                    snapshots.iterdir(),
+                    key=lambda item: item.stat().st_mtime,
+                    reverse=True,
+                )
+                if path.is_dir()
+            )
+        for candidate in candidates:
+            has_model = (
+                (candidate / "model.safetensors").exists()
+                or (candidate / "pytorch_model.bin").exists()
+            )
+            has_tokenizer = (
+                (candidate / "tokenizer.json").exists()
+                or (candidate / "vocab.txt").exists()
+            )
+            if (
+                (candidate / "modules.json").is_file()
+                and (candidate / "config.json").is_file()
+                and has_model
+                and has_tokenizer
+            ):
+                return candidate
     return None
 
 

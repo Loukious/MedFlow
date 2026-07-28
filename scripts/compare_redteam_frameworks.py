@@ -100,7 +100,11 @@ def main() -> None:
         description="Compare LangGraph and LlamaIndex on the same safe MedFlow red-team planning scenario."
     )
     parser.add_argument("--framework", choices=["langgraph", "llamaindex", "both"], default="both")
-    parser.add_argument("--provider", choices=["gpt_oss", "llama", "qwen"], default="gpt_oss")
+    parser.add_argument(
+        "--provider",
+        choices=["gpt_oss", "llama", "qwen", "local_qwen"],
+        default="gpt_oss",
+    )
     parser.add_argument("--scenario", default=None, help="Path to a scenario JSON file.")
     parser.add_argument("--results", type=int, default=5, help="Retrieved KB results per query/tool call.")
     parser.add_argument("--sources", action="store_true", help="Show retrieved sources.")

@@ -158,7 +158,11 @@ def main() -> None:
     parser.add_argument("--use-sudo", action="store_true", help="Run Docker commands through sudo.")
     parser.add_argument("--target", default=CONTAINER_IP, help="Lab target. Defaults to the isolated Docker container IP.")
     parser.add_argument("--ports", default=None, help="Comma-separated target ports. Defaults depend on target.")
-    parser.add_argument("--provider", choices=["gpt_oss", "llama", "qwen"], default="gpt_oss")
+    parser.add_argument(
+        "--provider",
+        choices=["gpt_oss", "llama", "qwen", "local_qwen"],
+        default="gpt_oss",
+    )
     parser.add_argument("--results", type=int, default=5, help="MedFlow/ATT&CK retrieval results per query.")
     parser.add_argument(
         "--exploit-validation",

@@ -78,7 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     ask = sub.add_parser("ask", help="Ask one of the agents")
     ask.add_argument("agent", choices=sorted(AGENTS))
     ask.add_argument("question")
-    ask.add_argument("--provider", choices=["gpt_oss", "llama", "qwen"], default="gpt_oss")
+    ask.add_argument(
+        "--provider",
+        choices=["gpt_oss", "llama", "qwen", "local_qwen"],
+        default="gpt_oss",
+    )
     ask.add_argument("--results", type=int, default=8)
     ask.add_argument("--sources", action="store_true")
     ask.set_defaults(func=cmd_ask)

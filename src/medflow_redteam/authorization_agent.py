@@ -13,6 +13,12 @@ from urllib.parse import urlparse, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from groq import APIStatusError, BadRequestError, Groq, RateLimitError
+from openai import (
+    APIStatusError as OpenAIAPIStatusError,
+    BadRequestError as OpenAIBadRequestError,
+    OpenAI,
+    RateLimitError as OpenAIRateLimitError,
+)
 from pypdf import PdfReader
 
 from medflow_ti.config import ROOT, load_settings
@@ -29,7 +35,7 @@ SENSITIVE_HEADER_MARKERS = {"authorization", "cookie", "api-key", "apikey", "tok
 WRITE_MARKER_PATTERN = re.compile(
     r"(?i)(?:autonomous|automated|authorization|security)[ _-]?test|test[ _-]?only"
 )
-AUDIT_CHECKPOINT_VERSION = 2
+AUDIT_CHECKPOINT_VERSION = 6
 
 
 class AuthorizationAgentError(RuntimeError):
@@ -401,12 +407,13 @@ class GenericAuthorizationAgent:
         provider: str = "gpt_oss",
     ) -> None:
         settings = load_settings()
-        if not settings.groq_api_key:
-            raise AuthorizationAgentError("Missing GROQ_API_KEY/GroqAPIKey in .env.")
         normalized_provider = provider.strip().lower().replace("-", "_")
-        if normalized_provider not in {"gpt_oss", "llama", "qwen"}:
+        if normalized_provider != "local_qwen" and not settings.groq_api_key:
+            raise AuthorizationAgentError("Missing GROQ_API_KEY/GroqAPIKey in .env.")
+        if normalized_provider not in {"gpt_oss", "llama", "qwen", "local_qwen"}:
             raise AuthorizationAgentError(
-                "Authorization agent provider must be `gpt_oss`, `llama`, or `qwen`."
+                "Authorization agent provider must be `gpt_oss`, `llama`, `qwen`, "
+                "or `local_qwen`."
             )
         self.document = document
         self.logger = logger
@@ -415,10 +422,26 @@ class GenericAuthorizationAgent:
             self.model = settings.gpt_oss_model
         elif normalized_provider == "llama":
             self.model = settings.llama_model
-        else:
+        elif normalized_provider == "qwen":
             self.model = settings.qwen_model
-        self.supports_json_schema = normalized_provider == "gpt_oss"
-        self.client = Groq(api_key=settings.groq_api_key, max_retries=0)
+        else:
+            self.model = settings.local_qwen_model
+        self.supports_json_schema = normalized_provider in {"gpt_oss", "local_qwen"}
+        if normalized_provider == "local_qwen":
+            self.backend = "llama.cpp"
+            self.api_endpoint = (
+                f"{settings.local_qwen_base_url.rstrip('/')}/chat/completions"
+            )
+            self.client = OpenAI(
+                api_key=settings.local_qwen_api_key or "local",
+                base_url=settings.local_qwen_base_url,
+                max_retries=0,
+                timeout=300.0,
+            )
+        else:
+            self.backend = "Groq"
+            self.api_endpoint = "https://api.groq.com/openai/v1/chat/completions"
+            self.client = Groq(api_key=settings.groq_api_key, max_retries=0)
         self.http_tool = GenericHttpPlanTool(
             document,
             logger,
@@ -432,7 +455,7 @@ class GenericAuthorizationAgent:
         self.logger.status(f"Starting generic prompt-driven assessment with {self.model}")
         self.logger.event(
             "assessment_started",
-            provider="Groq",
+            provider=self.backend,
             llm_profile=self.provider,
             model=self.model,
             prompt_source=str(self.document.source),
@@ -571,7 +594,7 @@ class GenericAuthorizationAgent:
         assessment = self.generate_assessment()
         self.logger.event(
             "assessment_completed",
-            provider="Groq",
+            provider=self.backend,
             model=self.model,
             llm_calls=self.llm_calls,
             http_requests=len(self.http_tool.observations),
@@ -824,12 +847,20 @@ Decision rules:
   role. Reference accounts, IDs, and role strings are context rather than credentials. Access
   obtained solely by changing such a claim is unauthorized unless the evidence shows distinct
   secrets, tokens, sessions, or another authentication ceremony were used.
-- If evidence matches the declared fail condition, the result must be FAIL.
 - PASS means the authorization control resisted all unauthorized attempts in this test.
 - FAIL means evidence demonstrates unauthorized disclosure, function access, write, or privileged
   access.
 - INCONCLUSIVE means transport failure, invalid request shape, or ambiguous semantics prevent a
   defensible judgment.
+- Planner conditions are reviewable metadata. If they invert these security meanings, judge the
+  observed security behavior instead: denied unauthorized access is PASS, while a nonexistent
+  route, testing mistake, or unmet functional expectation is INCONCLUSIVE rather than a
+  vulnerability.
+- A missing optional response header or an unavailable endpoint is not itself authorization impact.
+- Route names, endpoint existence, generic errors, and public API inventory are reconnaissance
+  metadata, not unauthorized disclosure by themselves. Security must not depend on hiding a route.
+  FAIL only when evidence exposes protected content, secrets, private object data, restricted
+  functionality, or privilege.
 - Interpret response semantics, not status codes alone.
 - Root-cause statements must distinguish directly observed behavior from black-box inference.
   Never claim knowledge of unseen authentication, code, storage, or validation internals; describe
@@ -856,7 +887,10 @@ Relevant baseline and test evidence:
                     "role": "system",
                     "content": (
                         "You are a strict black-box authorization-test judge. Scenario-specific "
-                        "facts come only from the supplied prompt and evidence."
+                        "facts come only from the supplied prompt and evidence. Endpoint names, "
+                        "route existence, and public API inventory alone are reconnaissance "
+                        "metadata, never proof of protected-data disclosure or authorization "
+                        "failure."
                     ),
                 },
                 {"role": "user", "content": prompt},
@@ -1064,9 +1098,14 @@ Mandatory reasoning rules:
 - If protected data, functions, writes, or privileged access become available solely after a
   `header_overrides` variation, classify the behavior as unauthorized and the affected security
   test as FAIL.
-- Compare each result with its declared objective, pass condition, and fail condition. If any
-  evidence matches the declared fail condition, the result MUST be FAIL; do not reinterpret the
-  claimed role as legitimate to avoid that condition.
+- Compare each result with its declared objective, pass condition, and fail condition, but enforce
+  security semantics above malformed planner wording. FAIL requires observed unauthorized
+  disclosure, function access, write, or privilege. A denied attack is PASS. A nonexistent route,
+  missing optional metadata, malformed test, or unmet non-security expectation is INCONCLUSIVE and
+  must not produce a vulnerability finding.
+- Route names, endpoint existence, generic errors, and public API inventory are not authorization
+  impact by themselves. Do not classify discovery assistance or the absence of obscurity as a
+  vulnerability without protected content, secrets, restricted functionality, or privilege.
 - `authorization_outcome: allowed` means the server allowed the request. It does not mean the
   access was authorized; state that distinction in `security_significance`.
 - Interpret response semantics rather than status alone.
@@ -1097,7 +1136,9 @@ Relevant baseline and test evidence:
                         "role": "system",
                         "content": (
                             "You are an independent authorization-verdict critic. Correct semantic "
-                            "errors without inventing evidence."
+                            "errors without inventing evidence. Endpoint names, route existence, "
+                            "and public API inventory alone are reconnaissance metadata, never "
+                            "proof of protected-data disclosure or authorization failure."
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -1162,8 +1203,9 @@ Relevant baseline and test evidence:
             "messages": effective_messages,
             "temperature": temperature,
             "max_completion_tokens": max_completion_tokens,
-            "reasoning_format": "hidden",
         }
+        if self.provider != "local_qwen":
+            request["reasoning_format"] = "hidden"
         if self.provider == "gpt_oss":
             request["reasoning_effort"] = "medium"
         elif self.provider == "qwen":
@@ -1205,11 +1247,13 @@ Relevant baseline and test evidence:
             try:
                 response = self.client.chat.completions.create(**request)
                 break
-            except RateLimitError as exc:
+            except (RateLimitError, OpenAIRateLimitError) as exc:
                 if retry == 5:
                     raise
                 delay = rate_limit_delay(exc, retry)
-                self.logger.status(f"Groq rate limit reached; retrying in {delay:.1f}s")
+                self.logger.status(
+                    f"{self.backend} rate limit reached; retrying in {delay:.1f}s"
+                )
                 self.logger.event(
                     "llm_rate_limit",
                     call_number=self.llm_calls,
@@ -1218,7 +1262,7 @@ Relevant baseline and test evidence:
                     delay_seconds=delay,
                 )
                 time.sleep(delay)
-            except BadRequestError as exc:
+            except (BadRequestError, OpenAIBadRequestError) as exc:
                 tool_error = is_tool_argument_error(exc)
                 json_error = is_json_validation_error(exc)
                 if retry == 5 or not (tool_error or json_error):
@@ -1229,7 +1273,10 @@ Relevant baseline and test evidence:
                         "were not strict JSON. Call the required tool again with a single valid "
                         "JSON object: no comments, trailing commas, or prose outside fields."
                     )
-                    status = "Groq rejected malformed tool JSON; asking the model to retry"
+                    status = (
+                        f"{self.backend} rejected malformed tool JSON; "
+                        "asking the model to retry"
+                    )
                     event = "llm_tool_json_retry"
                 else:
                     correction = (
@@ -1237,7 +1284,10 @@ Relevant baseline and test evidence:
                         "concise JSON object that exactly satisfies the requested schema. Include "
                         "every required field and no extra fields."
                     )
-                    status = "Groq rejected structured JSON; asking the model to retry concisely"
+                    status = (
+                        f"{self.backend} rejected structured JSON; "
+                        "asking the model to retry concisely"
+                    )
                     event = "llm_structured_json_retry"
                 request["messages"] = [
                     *request["messages"],
@@ -1251,13 +1301,14 @@ Relevant baseline and test evidence:
                     purpose=purpose,
                     retry=retry + 1,
                 )
-            except APIStatusError as exc:
+            except (APIStatusError, OpenAIAPIStatusError) as exc:
                 reduced = reduced_completion_budget(exc, request["max_completion_tokens"])
                 if reduced is None or retry == 5:
                     raise
                 request["max_completion_tokens"] = reduced
                 self.logger.status(
-                    f"Groq request budget exceeded; retrying with {reduced} completion tokens"
+                    f"{self.backend} request budget exceeded; retrying with "
+                    f"{reduced} completion tokens"
                 )
                 self.logger.event(
                     "llm_completion_budget_reduced",
@@ -1267,7 +1318,9 @@ Relevant baseline and test evidence:
                     max_completion_tokens=reduced,
                 )
         else:
-            raise AuthorizationAgentError("Groq completion retry loop ended unexpectedly.")
+            raise AuthorizationAgentError(
+                f"{self.backend} completion retry loop ended unexpectedly."
+            )
 
         elapsed_ms = round((time.monotonic() - started) * 1_000, 2)
         message = response.choices[0].message
@@ -1465,7 +1518,7 @@ def resume_authorization_document(
             assessment = agent.generate_assessment()
         logger.event(
             "assessment_completed",
-            provider="Groq",
+            provider=agent.backend,
             model=agent.model,
             llm_calls=agent.llm_calls,
             http_requests=len(state["observations"]),
@@ -1623,14 +1676,15 @@ def finalize_authorization_run(
         "started_at": started_at,
         "completed_at": utc_now(),
         "elapsed_seconds": elapsed_seconds,
-        "provider": "Groq",
+        "provider": agent.backend,
         "llm_profile": agent.provider,
-        "api_endpoint": "https://api.groq.com/openai/v1/chat/completions",
+        "api_endpoint": agent.api_endpoint,
         "model": agent.model,
         "reasoning_effort": {
             "gpt_oss": "medium",
             "qwen": "none",
             "llama": "not_applicable",
+            "local_qwen": "disabled_at_server",
         }[agent.provider],
         "prompt_source": str(document.source),
         "prompt_sources": [
@@ -1930,9 +1984,26 @@ def execute_plan_tool_schema() -> dict[str, Any]:
         "properties": {
             "test_id": {"type": "string"},
             "name": {"type": "string"},
-            "objective": {"type": "string"},
-            "pass_condition": {"type": "string"},
-            "fail_condition": {"type": "string"},
+            "objective": {
+                "type": "string",
+                "description": (
+                    "The authorization control or boundary being evaluated, stated from the "
+                    "defender's perspective."
+                ),
+            },
+            "pass_condition": {
+                "type": "string",
+                "description": (
+                    "Safe behavior proving the target resisted the unauthorized action."
+                ),
+            },
+            "fail_condition": {
+                "type": "string",
+                "description": (
+                    "Observed unauthorized disclosure, function access, write, or privilege. "
+                    "Do not use route absence, transport errors, or test-design problems."
+                ),
+            },
         },
         "required": [
             "test_id",
@@ -2061,6 +2132,17 @@ Build a minimal but complete request matrix:
   by a different principal.
 - Use only methods allowed by the host tool and endpoints supported by the prompt or target
   evidence.
+- Define every test from the defender's perspective: PASS means the target resisted the attempted
+  unauthorized action; FAIL means evidence confirms unauthorized data disclosure, function access,
+  write, or privilege. Never define PASS as successfully attacking a protected route.
+- Use INCONCLUSIVE for nonexistent routes, transport errors, ambiguous content, missing test
+  prerequisites, malformed test logic, or optional protocol metadata. Those conditions are not
+  vulnerabilities and must not be encoded as FAIL conditions.
+- Do not turn generic availability, route existence, or method-enumeration checks into security
+  tests unless target evidence establishes a protected authorization boundary and an unauthorized
+  impact can be proved. Such requests may remain `recon`.
+- Public route names, generic endpoint metadata, and the mere existence of a protected path are
+  reconnaissance context rather than sensitive authorization data.
 - Mutating requests must use an unmistakable marker such as
   `AUTONOMOUS_SECURITY_TEST_ONLY`; do not use real-world operational values.
 - Use `recon` as test_id for baselines and declared test IDs for security checks.
@@ -2427,8 +2509,36 @@ def apply_verdict_audit(
         )
 
     tests_by_id = {item["test_id"]: dict(item) for item in test_results}
+    inconsistent_non_failure = False
     for review in test_reviews:
         test = tests_by_id[review["test_id"]]
+        if (
+            review["result"] != "FAIL"
+            and review["vulnerability_classification"]
+        ):
+            inconsistent_non_failure = True
+            if (
+                test.get("result") == review["result"]
+                and not test.get("vulnerability_classification")
+            ):
+                continue
+            test["result"] = review["result"]
+            test["summary"] = (
+                "The independent audit found no confirmed unauthorized disclosure, "
+                "function access, write, or privilege in this test."
+                if review["result"] == "PASS"
+                else "The available evidence did not support a defensible security verdict."
+            )
+            test["root_cause"] = (
+                "Observed behavior did not establish an authorization failure."
+                if review["result"] == "PASS"
+                else "The tested evidence was insufficient or ambiguous."
+            )
+            test["vulnerability_classification"] = []
+            test["remediation"] = [
+                "Retain observed controls and continue coverage for untested authorization contexts."
+            ]
+            continue
         for key in (
             "result",
             "summary",
@@ -2445,7 +2555,11 @@ def apply_verdict_audit(
         review = reviews_by_action.get(updated["action_id"])
         if review:
             updated["authorization_outcome"] = review["authorization_outcome"]
-            updated["security_significance"] = review["security_significance"]
+            updated["security_significance"] = (
+                "The evidence did not establish unauthorized authorization impact."
+                if inconsistent_non_failure
+                else review["security_significance"]
+            )
         audited_interpretations.append(updated)
     return (
         [tests_by_id[item["test_id"]] for item in test_results],
@@ -2521,6 +2635,10 @@ def validate_assessment(
         if test.get("result") == "FAIL" and not test.get("vulnerability_classification"):
             errors.append(
                 f"missing vulnerability classification for failed test {test.get('test_id')}"
+            )
+        if test.get("result") != "FAIL" and test.get("vulnerability_classification"):
+            errors.append(
+                f"non-failed test {test.get('test_id')} cannot carry vulnerability classifications"
             )
         unknown_actions = sorted(set(test.get("action_ids") or []) - expected_actions)
         if unknown_actions:
@@ -2933,7 +3051,7 @@ def message_to_dict(message: Any) -> dict[str, Any]:
     elif isinstance(message, dict):
         raw = message
     else:
-        raise TypeError(f"Unsupported Groq message type: {type(message).__name__}")
+        raise TypeError(f"Unsupported LLM message type: {type(message).__name__}")
     return {
         key: raw[key]
         for key in ("role", "content", "tool_calls")

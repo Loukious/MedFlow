@@ -226,7 +226,10 @@ class GenericHttpPlanTool:
                 if mutable_headers != self.mutable_headers:
                     raise ValueError("Follow-up plans cannot change mutable headers.")
 
-        tests = validate_declared_tests(arguments.get("tests"))
+        tests = validate_declared_tests(
+            arguments.get("tests"),
+            allow_empty=bool(self.target_origin),
+        )
         candidate_tests = dict(self.declared_tests)
         for test in tests:
             existing = candidate_tests.get(test["test_id"])
@@ -245,6 +248,7 @@ class GenericHttpPlanTool:
             validated = self.validate_request(
                 item,
                 tests={*candidate_tests, "recon"},
+                baseline_headers=baseline_headers,
                 mutable_headers=mutable_headers,
             )
             if validated["action_id"] in batch_action_ids:
@@ -271,6 +275,7 @@ class GenericHttpPlanTool:
         item: Any,
         *,
         tests: set[str],
+        baseline_headers: dict[str, str],
         mutable_headers: set[str],
     ) -> dict[str, Any]:
         if not isinstance(item, dict):
@@ -302,9 +307,23 @@ class GenericHttpPlanTool:
         ):
             raise ValueError("Request path must remain relative to the prompt-derived origin.")
 
-        overrides = normalize_headers(item.get("header_overrides") or {})
-        if not set(overrides).issubset(mutable_headers):
-            raise ValueError("A request may override only model-declared mutable supplied headers.")
+        requested_overrides = normalize_headers(item.get("header_overrides") or {})
+        # Models commonly echo the complete effective header set. Equal baseline
+        # values are not mutations, so keep only values that actually change.
+        overrides = {
+            name: value
+            for name, value in requested_overrides.items()
+            if baseline_headers.get(name) != value
+        }
+        undeclared = sorted(set(overrides) - mutable_headers)
+        if undeclared:
+            names = ", ".join(f"`{name}`" for name in undeclared)
+            raise ValueError(
+                f"Header(s) {names} change the supplied baseline but are not declared "
+                "mutable. Add every changed baseline header to `mutable_headers`, or omit "
+                "that change. Unchanged baseline headers should be omitted from "
+                "`header_overrides`."
+            )
         allowed_value_text = self.scope_evidence_text().lower()
         for value in overrides.values():
             if value.lower() not in allowed_value_text:
@@ -479,18 +498,7 @@ class GenericAuthorizationAgent:
                 "variants from it."
             )
         )
-        messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": generic_planner_system_prompt(
-                    discovery_mode=self.document.discovery_mode
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"{scenario_instruction}\n\n{self.document.text}",
-            },
-        ]
+        messages = self.planner_messages(scenario_instruction)
         tool_schema = execute_plan_tool_schema()
         for round_number in range(1, self.max_tool_rounds + 1):
             self.logger.status(f"LLM planning/tool round {round_number}")
@@ -500,12 +508,14 @@ class GenericAuthorizationAgent:
                 tool_choice="required",
                 max_completion_tokens=3_500,
                 purpose=f"http_plan_round_{round_number}",
+                temperature=0.0,
             )
             assistant = message_to_dict(message)
             messages.append(assistant)
             tool_calls = assistant.get("tool_calls") or []
             if not tool_calls:
                 raise AuthorizationAgentError("The model did not call the generic HTTP plan tool.")
+            round_errors: list[str] = []
             for tool_call in tool_calls:
                 function = tool_call.get("function") or {}
                 arguments: dict[str, Any] = {}
@@ -526,6 +536,7 @@ class GenericAuthorizationAgent:
                             arguments=safe_plan_for_log(arguments),
                         )
                         self.logger.status(f"HTTP plan rejected: {result['error']}")
+                        round_errors.append(result["error"])
                 messages.append(
                     {
                         "role": "tool",
@@ -535,14 +546,12 @@ class GenericAuthorizationAgent:
                     }
                 )
             if not self.http_tool.observations:
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "No HTTP evidence was collected. Correct the scope/plan using only "
-                            "facts from the supplied prompt and call execute_http_plan again."
-                        ),
-                    }
+                messages = self.planner_messages(
+                    scenario_instruction,
+                    feedback={
+                        "reason": "No HTTP evidence was collected because the plan was rejected.",
+                        "plan_errors": round_errors,
+                    },
                 )
                 continue
 
@@ -574,18 +583,24 @@ class GenericAuthorizationAgent:
                 if self.document.discovery_mode
                 else "Keep the same target, baseline headers, and mutable headers."
             )
-            messages.append(
-                {
-                    "role": "user",
-                    "content": (
-                        "A separate model coverage review found missing or inconclusive work. "
-                        f"Call execute_http_plan with only the necessary follow-up requests. "
-                        f"{followup_scope} Any previously "
-                        "declared test that you re-declare must remain unchanged; add a test only "
-                        "when it is required by the objective or supported target evidence.\n\n"
-                        f"{json.dumps(self.coverage_review, indent=2)}"
+            messages = self.planner_messages(
+                scenario_instruction,
+                feedback={
+                    "reason": (
+                        "A separate model coverage review found missing or "
+                        "inconclusive work."
                     ),
-                }
+                    "instruction": (
+                        "Call execute_http_plan with only the necessary follow-up requests. "
+                        f"{followup_scope} Use an empty `tests` array when all follow-up "
+                        "requests reference established test IDs. Declare only a genuinely "
+                        "new test required by the objective or target evidence."
+                    ),
+                    "plan_errors": round_errors,
+                    "coverage_review": compact_coverage_review(
+                        self.coverage_review
+                    ),
+                },
             )
         else:
             raise AuthorizationAgentError("Maximum tool rounds reached before complete prompt coverage.")
@@ -606,6 +621,61 @@ class GenericAuthorizationAgent:
         )
         return assessment, self.http_tool.observations
 
+    def planner_messages(
+        self,
+        scenario_instruction: str,
+        *,
+        feedback: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        content = f"{scenario_instruction}\n\n{self.document.text}"
+        if feedback is not None:
+            planning_state = {
+                "established_scope": {
+                    "target_origin": self.http_tool.target_origin,
+                    "baseline_headers": self.http_tool.baseline_headers,
+                    "mutable_headers": sorted(self.http_tool.mutable_headers),
+                },
+                "established_tests": [
+                    {
+                        "test_id": item.get("test_id"),
+                        "name": item.get("name"),
+                        "objective": item.get("objective"),
+                    }
+                    for item in self.http_tool.declared_tests.values()
+                ],
+                "executed_action_ids": [
+                    item["action_id"] for item in self.http_tool.observations
+                ],
+                "executed_evidence": compact_observations(
+                    self.http_tool.observations,
+                    total_body_chars=2_500,
+                    per_body_chars=350,
+                ),
+                "request_budget": {
+                    "maximum": self.http_tool.request_budget,
+                    "used": len(self.http_tool.observations),
+                    "remaining": (
+                        self.http_tool.request_budget
+                        - len(self.http_tool.observations)
+                    ),
+                },
+                "feedback": feedback,
+            }
+            content = (
+                f"{content}\n\nThis is a compact follow-up checkpoint. Do not repeat executed "
+                "actions. Preserve the established scope and use unique new action IDs.\n\n"
+                f"{json.dumps(planning_state, indent=2)}"
+            )
+        return [
+            {
+                "role": "system",
+                "content": generic_planner_system_prompt(
+                    discovery_mode=self.document.discovery_mode
+                ),
+            },
+            {"role": "user", "content": content},
+        ]
+
     def structural_coverage_gaps(self) -> list[str]:
         observed_test_ids = {
             str(item.get("test_id") or "")
@@ -619,25 +689,38 @@ class GenericAuthorizationAgent:
         ]
 
     def review_coverage(self) -> dict[str, Any]:
-        evidence = compact_observations(
-            self.http_tool.observations,
-            total_body_chars=4_000,
-            per_body_chars=500,
-        )
+        evidence = compact_coverage_evidence(self.http_tool.observations)
+        declared_tests = [
+            {
+                "test_id": item.get("test_id"),
+                "name": item.get("name"),
+                "objective": item.get("objective"),
+            }
+            for item in self.http_tool.declared_tests.values()
+        ]
         prompt = f"""
 Act as an independent coverage reviewer. Compare the original assignment with the model-declared
 tests and executed HTTP evidence. Decide whether every explicitly required reconnaissance step and
 security test has enough request/response evidence for a final judgment. Do not judge whether the
 application is vulnerable yet. Do not require tests that are absent from the assignment.
+Treat words such as vary, alter, tamper, spoof, or claim as explicit mutation requirements. A
+baseline-only request does not cover a requirement to vary a header or parameter. When the
+assignment names multiple objects, functions, or alternate values, verify that each required
+combination has executed evidence unless the assignment explicitly limits the matrix.
+Evaluate the actual requests globally. Baseline and mutated requests may use separate declared
+test IDs; test names and grouping are organizational metadata and do not create a coverage gap
+when the required method, path, baseline context, and changed value are all represented.
 For a mutating test, an explicit server response that the write was accepted is enough to judge
 acceptance; require a read-back only before claiming persistence or a particular stored field
 change. Treat a schema/transport error without acceptance semantics as inconclusive coverage.
+Be concise. `covered_requirements` should contain short labels, not prose explanations. Put details
+only in `missing_requirements`, and only when work is actually missing.
 
 Original assignment:
 {self.document.text}
 
 Declared tests:
-{json.dumps(list(self.http_tool.declared_tests.values()), indent=2)}
+{json.dumps(declared_tests, indent=2)}
 
 Executed evidence:
 {json.dumps(evidence, indent=2)}
@@ -654,8 +737,9 @@ Executed evidence:
                 {"role": "user", "content": prompt},
             ],
             response_format=coverage_response_format(),
-            max_completion_tokens=2_000,
+            max_completion_tokens=1_200,
             purpose="coverage_review",
+            temperature=0.0,
         )
         payload = parse_json_object(strip_thinking(message.content or ""))
         if not isinstance(payload.get("complete"), bool):
@@ -671,43 +755,52 @@ Executed evidence:
         if not declared_tests:
             raise AuthorizationAgentError("The model did not declare any security tests.")
 
-        baseline = [
-            item for item in self.http_tool.observations if item["test_id"] == "recon"
-        ]
-        self.logger.status(
-            f"The model is interpreting {len(baseline)} baseline responses"
-        )
-        interpretations = self.interpret_baseline(baseline)
-        test_results: list[dict[str, Any]] = []
-        for test in declared_tests:
-            test_observations = [
+        checkpoint = self.load_completed_audit_checkpoint(declared_tests)
+        if checkpoint:
+            test_results, interpretations = checkpoint
+            self.logger.status(
+                f"Recovered {len(test_results)} completed independently audited verdicts"
+            )
+        else:
+            baseline = [
                 item
                 for item in self.http_tool.observations
-                if item["test_id"] == test["test_id"]
+                if item["test_id"] == "recon"
             ]
-            if not test_observations:
-                raise AuthorizationAgentError(
-                    f"No evidence exists for declared test '{test['test_id']}'."
-                )
             self.logger.status(
-                f"The model is judging {test['test_id']} from "
-                f"{len(test_observations)} responses"
+                f"The model is interpreting {len(baseline)} baseline responses"
             )
-            judgment = self.judge_security_test(
-                test,
-                baseline=baseline,
-                baseline_interpretations=interpretations,
-                test_observations=test_observations,
-            )
-            test_results.append(judgment["test"])
-            interpretations.extend(judgment["response_interpretations"])
+            interpretations = self.interpret_baseline(baseline)
+            test_results = []
+            for test in declared_tests:
+                test_observations = [
+                    item
+                    for item in self.http_tool.observations
+                    if item["test_id"] == test["test_id"]
+                ]
+                if not test_observations:
+                    raise AuthorizationAgentError(
+                        f"No evidence exists for declared test '{test['test_id']}'."
+                    )
+                self.logger.status(
+                    f"The model is judging {test['test_id']} from "
+                    f"{len(test_observations)} responses"
+                )
+                judgment = self.judge_security_test(
+                    test,
+                    baseline=baseline,
+                    baseline_interpretations=interpretations,
+                    test_observations=test_observations,
+                )
+                test_results.append(judgment["test"])
+                interpretations.extend(judgment["response_interpretations"])
 
-        self.logger.status("An independent model critic is auditing all test verdicts")
-        test_results, interpretations = self.audit_test_judgments(
-            declared_tests=declared_tests,
-            test_results=test_results,
-            interpretations=interpretations,
-        )
+            self.logger.status("An independent model critic is auditing all test verdicts")
+            test_results, interpretations = self.audit_test_judgments(
+                declared_tests=declared_tests,
+                test_results=test_results,
+                interpretations=interpretations,
+            )
         self.logger.status("The model is synthesizing the final assessment")
         summary = self.apply_discovery_scope_guard(
             self.summarize_assessment(test_results)
@@ -728,6 +821,48 @@ Executed evidence:
                 f"Staged model report failed consistency checks: {errors}"
             )
         return assessment
+
+    def load_completed_audit_checkpoint(
+        self,
+        declared_tests: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | None:
+        checkpoint_path = (
+            self.logger.execution_path.parent / "verdict_audit_checkpoint.json"
+        )
+        if not checkpoint_path.exists():
+            return None
+        try:
+            checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            expected_test_ids = {item["test_id"] for item in declared_tests}
+            tests = checkpoint.get("tests") or []
+            interpretations = checkpoint.get("response_interpretations") or []
+            if (
+                checkpoint.get("version") != AUDIT_CHECKPOINT_VERSION
+                or checkpoint.get("prompt_sha256") != self.document.sha256
+                or checkpoint.get("model") != self.model
+                or set(checkpoint.get("audited_test_ids") or [])
+                != expected_test_ids
+                or {
+                    str(item.get("test_id"))
+                    for item in tests
+                    if isinstance(item, dict)
+                }
+                != expected_test_ids
+            ):
+                return None
+            validate_interpretation_ids(
+                interpretations,
+                [item["action_id"] for item in self.http_tool.observations],
+            )
+            return tests, interpretations
+        except (
+            AuthorizationAgentError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return None
 
     def reaudit_assessment(
         self,
@@ -918,6 +1053,7 @@ Relevant baseline and test evidence:
         test_results: list[dict[str, Any]],
     ) -> dict[str, Any]:
         discovery_limitation = self.discovery_scope_limitation()
+        compact_results = compact_test_results_for_summary(test_results)
         prompt = f"""
 Synthesize the final assessment summary from these model test judgments. Preserve their verdicts
 and evidence references. If any test is FAIL, overall posture must be vulnerable. If no test fails
@@ -938,29 +1074,53 @@ Original scenario:
 {self.document.text}
 
 Coverage review:
-{json.dumps(self.coverage_review, indent=2)}
+{json.dumps(compact_coverage_review(self.coverage_review), indent=2)}
 
 Test judgments:
-{json.dumps(test_results, indent=2)}
+{json.dumps(compact_results, indent=2)}
 """.strip()
-        message = self.complete(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are the final report synthesizer for a black-box authorization "
-                        "assessment. Do not invent evidence or alter prior test verdicts."
-                    ),
-                },
-                {"role": "user", "content": prompt},
-            ],
-            response_format=assessment_summary_response_format(
-                [item["action_id"] for item in self.http_tool.observations]
-            ),
-            max_completion_tokens=2_000,
-            purpose="assessment_summary",
+        try:
+            message = self.complete(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are the final report synthesizer for a black-box authorization "
+                            "assessment. Do not invent evidence or alter prior test verdicts. "
+                            "Consolidate related failed tests into a small number of findings."
+                        ),
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                response_format=assessment_summary_response_format(
+                    [item["action_id"] for item in self.http_tool.observations]
+                ),
+                max_completion_tokens=2_000,
+                purpose="assessment_summary",
+            )
+            summary = parse_json_object(strip_thinking(message.content or ""))
+        except Exception as exc:
+            # All security verdicts have already passed an independent model audit.
+            # Preserve that completed work if a final prose-only synthesis is unavailable.
+            reason = f"{type(exc).__name__}: {exc}"
+            self.logger.status(
+                "Final model synthesis was unavailable; preserving audited verdicts "
+                "with deterministic aggregation"
+            )
+            self.logger.event(
+                "assessment_summary_fallback",
+                error=reason,
+            )
+            summary = deterministic_assessment_summary(
+                test_results,
+                discovery_limitation=discovery_limitation,
+                synthesis_error=reason,
+            )
+        summary = reconcile_assessment_summary(
+            summary,
+            test_results,
+            discovery_limitation=discovery_limitation,
         )
-        summary = parse_json_object(strip_thinking(message.content or ""))
         self.logger.event("assessment_summary_result", summary=summary)
         return summary
 
@@ -1920,8 +2080,16 @@ def validate_prompt_headers(
             )
 
 
-def validate_declared_tests(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list) or not value:
+def validate_declared_tests(
+    value: Any,
+    *,
+    allow_empty: bool = False,
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise ValueError("The model must declare the security tests inferred from the prompt.")
+    if not value:
+        if allow_empty:
+            return []
         raise ValueError("The model must declare the security tests inferred from the prompt.")
     output: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -2063,14 +2231,27 @@ def execute_plan_tool_schema() -> dict[str, Any]:
                     "target_origin": {"type": "string"},
                     "baseline_headers": {
                         "type": "object",
+                        "description": (
+                            "Headers applied automatically to every request as the baseline "
+                            "identity context."
+                        ),
                         "additionalProperties": {"type": "string"},
                     },
                     "mutable_headers": {
                         "type": "array",
+                        "description": (
+                            "Every baseline header whose value differs in any planned request. "
+                            "Do not list headers that always retain their baseline value."
+                        ),
                         "items": {"type": "string"},
                     },
                     "tests": {
                         "type": "array",
+                        "description": (
+                            "Declare all inferred tests on the initial call. On a follow-up, "
+                            "use an empty array when requests reference established test IDs; "
+                            "include only genuinely new tests."
+                        ),
                         "items": test_schema,
                     },
                     "requests": {
@@ -2122,9 +2303,18 @@ Build a minimal but complete request matrix:
 {discovery_rules}
 - Test every object, role/header variation, function, write action, and privilege boundary named
   by the prompt or supported by observed target evidence.
+- Words such as vary, alter, tamper, spoof, or claim require an actual value change from the
+  baseline. A baseline-only request never covers a requested mutation. If the prompt names
+  multiple target objects and multiple applicable alternate values, test every required
+  combination unless the prompt explicitly narrows the matrix.
 - Preserve any prompt-supplied mapping between a principal/account identifier and its linked
   resource/object identifier. Never assume those identifiers are interchangeable.
 - Keep identity headers fixed unless the prompt explicitly asks to vary that header.
+- `baseline_headers` are applied automatically to every request. Do not repeat an unchanged
+  baseline header in `header_overrides`.
+- Declare every header whose value changes in any request in `mutable_headers`, including a
+  principal identifier used for an explicitly supplied reference identity. Put only actual
+  per-request changes in `header_overrides`.
 - A header override remains a claim made by the same baseline subject; it is not proof that the
   subject became the claimed identity or role. Judge authorization against that baseline subject.
 - Unless the prompt provides separate authenticated credentials, access obtained only by changing
@@ -2167,24 +2357,24 @@ def coverage_response_format() -> dict[str, Any]:
                     "complete": {"type": "boolean"},
                     "covered_requirements": {
                         "type": "array",
+                        "maxItems": 30,
                         "items": {
-                            "type": "object",
-                            "properties": {
-                                "requirement": {"type": "string"},
-                                "evidence_action_ids": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                },
-                            },
-                            "required": ["requirement", "evidence_action_ids"],
-                            "additionalProperties": False,
+                            "type": "string",
+                            "maxLength": 180,
                         },
                     },
                     "missing_requirements": {
                         "type": "array",
-                        "items": {"type": "string"},
+                        "maxItems": 12,
+                        "items": {
+                            "type": "string",
+                            "maxLength": 500,
+                        },
                     },
-                    "review_summary": {"type": "string"},
+                    "review_summary": {
+                        "type": "string",
+                        "maxLength": 600,
+                    },
                 },
                 "required": [
                     "complete",
@@ -2322,6 +2512,218 @@ def test_judgment_response_format(
             },
         },
     }
+
+
+def compact_test_results_for_summary(
+    test_results: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    def clipped(value: Any, limit: int) -> str:
+        text = " ".join(str(value or "").split())
+        return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
+
+    compact: list[dict[str, Any]] = []
+    for test in test_results:
+        compact.append(
+            {
+                "test_id": str(test.get("test_id") or ""),
+                "name": clipped(test.get("name"), 160),
+                "result": str(test.get("result") or ""),
+                "summary": clipped(test.get("summary"), 300),
+                "action_ids": [
+                    str(item) for item in test.get("action_ids") or []
+                ],
+                "root_cause": clipped(test.get("root_cause"), 350),
+                "vulnerability_classification": [
+                    {
+                        "name": clipped(item.get("name"), 100),
+                        "cwe": clipped(item.get("cwe"), 60),
+                        "owasp": clipped(item.get("owasp"), 80),
+                    }
+                    for item in (test.get("vulnerability_classification") or [])[:3]
+                    if isinstance(item, dict)
+                ],
+                "remediation": [
+                    clipped(item, 220)
+                    for item in (test.get("remediation") or [])[:2]
+                ],
+            }
+        )
+    return compact
+
+
+def compact_coverage_review(review: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "complete": bool(review.get("complete")),
+        "covered_requirement_count": len(review.get("covered_requirements") or []),
+        "missing_requirements": [
+            str(item)[:300] for item in review.get("missing_requirements") or []
+        ],
+        "review_summary": str(review.get("review_summary") or "")[:500],
+    }
+
+
+def deterministic_assessment_summary(
+    test_results: list[dict[str, Any]],
+    *,
+    discovery_limitation: str = "",
+    synthesis_error: str = "",
+) -> dict[str, Any]:
+    counts = {
+        result: sum(1 for item in test_results if item.get("result") == result)
+        for result in ("PASS", "FAIL", "INCONCLUSIVE")
+    }
+    posture = (
+        "vulnerable"
+        if counts["FAIL"]
+        else "inconclusive"
+        if counts["INCONCLUSIVE"] or discovery_limitation
+        else "secure"
+    )
+    failed = [item for item in test_results if item.get("result") == "FAIL"]
+    relevant = failed or [
+        item
+        for item in test_results
+        if item.get("result") == "INCONCLUSIVE"
+    ] or test_results
+
+    root_causes = list(
+        dict.fromkeys(
+            str(item.get("root_cause") or "").strip()
+            for item in relevant
+            if str(item.get("root_cause") or "").strip()
+        )
+    )
+    remediations = list(
+        dict.fromkeys(
+            str(remediation).strip()
+            for item in relevant
+            for remediation in item.get("remediation") or []
+            if str(remediation).strip()
+        )
+    )
+    findings = [
+        {
+            "title": str(item.get("name") or item.get("test_id") or "Authorization failure"),
+            "severity": "high",
+            "evidence_action_ids": [
+                str(action_id) for action_id in item.get("action_ids") or []
+            ],
+            "classification": list(
+                item.get("vulnerability_classification") or []
+            ),
+            "remediation": [
+                str(remediation)
+                for remediation in item.get("remediation") or []
+            ],
+        }
+        for item in failed
+    ]
+    limitations = []
+    if discovery_limitation:
+        limitations.append(discovery_limitation)
+    if synthesis_error:
+        limitations.append(
+            "The final narrative synthesis used deterministic aggregation after the "
+            f"local model response failed validation ({synthesis_error}). Per-test "
+            "model judgments and independent critic verdicts were retained."
+        )
+
+    return {
+        "executive_summary": (
+            f"The assessment completed {len(test_results)} security tests: "
+            f"{counts['PASS']} passed, {counts['FAIL']} failed, and "
+            f"{counts['INCONCLUSIVE']} were inconclusive. "
+            f"The resulting security posture is {posture}."
+        ),
+        "overall_security_posture": posture,
+        "test_summary": (
+            f"PASS: {counts['PASS']}; FAIL: {counts['FAIL']}; "
+            f"INCONCLUSIVE: {counts['INCONCLUSIVE']}."
+        ),
+        "root_cause_analysis": (
+            "\n\n".join(root_causes)
+            or "The completed tests did not identify a consolidated root cause."
+        ),
+        "findings": findings,
+        "remediation_priorities": remediations[:10],
+        "limitations": limitations,
+    }
+
+
+def reconcile_assessment_summary(
+    summary: dict[str, Any],
+    test_results: list[dict[str, Any]],
+    *,
+    discovery_limitation: str = "",
+) -> dict[str, Any]:
+    reconciled = dict(summary)
+    counts = {
+        result: sum(1 for item in test_results if item.get("result") == result)
+        for result in ("PASS", "FAIL", "INCONCLUSIVE")
+    }
+    reconciled["overall_security_posture"] = (
+        "vulnerable"
+        if counts["FAIL"]
+        else "inconclusive"
+        if counts["INCONCLUSIVE"] or discovery_limitation
+        else "secure"
+    )
+    reconciled["test_summary"] = (
+        f"{len(test_results)} tests executed: {counts['PASS']} PASS, "
+        f"{counts['FAIL']} FAIL, and {counts['INCONCLUSIVE']} INCONCLUSIVE."
+    )
+
+    failed_tests = [
+        item for item in test_results if item.get("result") == "FAIL"
+    ]
+    failed_action_ids = {
+        str(action_id)
+        for item in failed_tests
+        for action_id in item.get("action_ids") or []
+    }
+    findings: list[dict[str, Any]] = []
+    covered_actions: set[str] = set()
+    for finding in reconciled.get("findings") or []:
+        if not isinstance(finding, dict):
+            continue
+        evidence_ids = [
+            str(action_id)
+            for action_id in finding.get("evidence_action_ids") or []
+            if str(action_id) in failed_action_ids
+        ]
+        if not evidence_ids:
+            continue
+        normalized = dict(finding)
+        normalized["evidence_action_ids"] = list(dict.fromkeys(evidence_ids))
+        findings.append(normalized)
+        covered_actions.update(evidence_ids)
+
+    for test in failed_tests:
+        action_ids = [
+            str(action_id) for action_id in test.get("action_ids") or []
+        ]
+        if set(action_ids).intersection(covered_actions):
+            continue
+        findings.append(
+            {
+                "title": str(
+                    test.get("name")
+                    or test.get("test_id")
+                    or "Authorization failure"
+                ),
+                "severity": "high",
+                "evidence_action_ids": action_ids,
+                "classification": list(
+                    test.get("vulnerability_classification") or []
+                ),
+                "remediation": [
+                    str(item) for item in test.get("remediation") or []
+                ],
+            }
+        )
+        covered_actions.update(action_ids)
+    reconciled["findings"] = findings
+    return reconciled
 
 
 def assessment_summary_response_format(
@@ -2960,6 +3362,24 @@ def compact_observations(
         output.append(compact)
         remaining -= min(len(observation["response"]["body"]), allowance)
     return output
+
+
+def compact_coverage_evidence(
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "action_id": item["action_id"],
+            "test_id": item["test_id"],
+            "method": item["request"]["method"],
+            "path": item["request"]["path"],
+            "header_overrides": item["request"]["header_overrides"],
+            "status": item["response"]["status"],
+            "response_body": str(item["response"].get("body") or "")[:180],
+            "transport_error": item["response"].get("transport_error") or "",
+        }
+        for item in observations
+    ]
 
 
 def safe_response_headers(headers: dict[str, str]) -> dict[str, str]:

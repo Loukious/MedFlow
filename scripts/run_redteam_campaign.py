@@ -79,7 +79,7 @@ def parse_json_object(value: str) -> dict:
 
 
 def print_campaign(console: Console, run: CampaignRun, show_report: bool, show_traces: bool) -> None:
-    status = "ERROR" if run.error else "OK"
+    status = campaign_display_status(run)
     console.rule(f"MedFlow Red-Team Campaign [{status}]")
     console.print(f"Goal: [bold]{run.goal}[/bold]")
     console.print(
@@ -222,6 +222,17 @@ def validation_label(run: CampaignRun) -> str:
     if not validation:
         return "not requested"
     return f"{validation.get('successful', 0)}/{validation.get('attempted', 0)} verified"
+
+
+def campaign_display_status(run: CampaignRun) -> str:
+    if run.error:
+        return "ERROR"
+    if any(
+        str(phase.get("status") or "").lower() == "tool_error"
+        for phase in run.phases
+    ):
+        return "INCOMPLETE"
+    return "OK"
 
 
 def web_route_label(run: CampaignRun) -> str:
@@ -531,9 +542,12 @@ def main() -> None:
     if args.json:
         data = asdict(run)
         data["saved"] = {name: str(path) for name, path in saved.items()}
+        data["campaign_status"] = campaign_display_status(run).lower()
         if graph_update:
             data["graph_update"] = graph_update
         print(json.dumps(data, indent=2, default=str))
+        if campaign_display_status(run) != "OK":
+            raise SystemExit(1)
         return
 
     console = Console()
@@ -544,6 +558,8 @@ def main() -> None:
         console.print(f"Updated graph: [bold]{graph_update['path']}[/bold]")
         console.print(f"Graph ingest: {graph_update['ingest']}")
         console.print(f"Graph dedup: {graph_update['dedup']}")
+    if campaign_display_status(run) != "OK":
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

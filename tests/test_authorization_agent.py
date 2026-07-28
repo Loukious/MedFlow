@@ -14,12 +14,16 @@ from medflow_redteam.authorization_agent import (
     PromptDocument,
     apply_verdict_audit,
     build_inline_prompt_document,
+    compact_coverage_evidence,
+    compact_test_results_for_summary,
     compact_observations,
+    deterministic_assessment_summary,
     extract_prompt_origins,
     is_json_validation_error,
     is_tool_argument_error,
     load_prompt_document,
     normalize_origin,
+    reconcile_assessment_summary,
     reduced_completion_budget,
     retry_duration_from_message,
     safe_plan_for_log,
@@ -396,6 +400,48 @@ class AuthorizationAgentTests(unittest.TestCase):
         )
         self.assertEqual(set(tool.declared_tests), {"cross_record_write"})
 
+    def test_redundant_baseline_headers_are_not_treated_as_overrides(self) -> None:
+        plan = valid_plan()
+        plan["requests"][0]["header_overrides"] = {
+            "X-Principal": "alice",
+            "X-Access-Level": "reader",
+        }
+        plan["requests"][1]["header_overrides"] = {
+            "X-Principal": "alice",
+            "X-Access-Level": "editor",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = GenericHttpPlanTool(
+                prompt_document(Path(tmp) / "scenario.txt"),
+                EventLogger(Path(tmp)),
+                request_budget=10,
+            )
+            validated = tool.validate_plan(plan)
+
+        self.assertEqual(validated["requests"][0]["header_overrides"], {})
+        self.assertEqual(
+            validated["requests"][1]["header_overrides"],
+            {"x-access-level": "editor"},
+        )
+
+    def test_changed_baseline_header_reports_exact_missing_mutability(self) -> None:
+        plan = valid_plan()
+        plan["requests"][1]["header_overrides"] = {
+            "X-Principal": "bob",
+            "X-Access-Level": "editor",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = GenericHttpPlanTool(
+                prompt_document(Path(tmp) / "scenario.txt"),
+                EventLogger(Path(tmp)),
+                request_budget=10,
+            )
+            with self.assertRaisesRegex(
+                ValueError,
+                r"`x-principal`.*not declared mutable",
+            ):
+                tool.validate_plan(plan)
+
     def test_rejected_batch_does_not_partially_commit_scope_or_tests(self) -> None:
         plan = valid_plan()
         plan["requests"][1]["action_id"] = plan["requests"][0]["action_id"]
@@ -432,6 +478,36 @@ class AuthorizationAgentTests(unittest.TestCase):
         self.assertEqual(
             tool.declared_tests["cross_record_write"]["fail_condition"],
             "The unauthorized update is accepted.",
+        )
+
+    def test_followup_can_reference_established_test_without_redeclaring_it(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tool = GenericHttpPlanTool(
+                prompt_document(Path(tmp) / "scenario.txt"),
+                EventLogger(Path(tmp)),
+                request_budget=10,
+            )
+            tool.validate_plan(valid_plan())
+            followup = valid_plan()
+            followup["tests"] = []
+            followup["requests"] = [
+                {
+                    "action_id": "followup_cross_record",
+                    "test_id": "cross_record_write",
+                    "objective": "Collect required follow-up evidence.",
+                    "method": "PATCH",
+                    "path": "/records/beta",
+                    "header_overrides": {"X-Access-Level": "editor"},
+                    "body": {"note": "AUTONOMOUS_SECURITY_TEST_ONLY"},
+                }
+            ]
+
+            validated = tool.validate_plan(followup)
+
+        self.assertEqual(validated["tests"], [])
+        self.assertEqual(
+            validated["requests"][0]["test_id"],
+            "cross_record_write",
         )
 
     def test_plan_rejects_unprompted_methods_headers_and_external_urls(self) -> None:
@@ -725,6 +801,110 @@ class AuthorizationAgentTests(unittest.TestCase):
         self.assertEqual(
             compact[0]["response"]["headers"],
             {"content-type": "application/json"},
+        )
+
+    def test_coverage_evidence_omits_verbose_response_metadata(self) -> None:
+        observation = {
+            "action_id": "claim_admin",
+            "test_id": "role_boundary",
+            "objective": "Test a role boundary.",
+            "request": {
+                "method": "GET",
+                "path": "/admin",
+                "header_overrides": {"x-role": "admin"},
+                "body": {},
+            },
+            "response": {
+                "status": 200,
+                "headers": {"content-type": "application/json"},
+                "body": "x" * 500,
+                "body_sha256": "abc",
+                "body_bytes": 500,
+                "transport_error": "",
+            },
+        }
+
+        compact = compact_coverage_evidence([observation])[0]
+
+        self.assertEqual(compact["action_id"], "claim_admin")
+        self.assertEqual(len(compact["response_body"]), 180)
+        self.assertNotIn("headers", compact)
+        self.assertNotIn("objective", compact)
+
+    def test_summary_input_is_compact_and_fallback_preserves_verdicts(self) -> None:
+        tests = [
+            {
+                "test_id": "role_boundary",
+                "name": "Role boundary",
+                "result": "FAIL",
+                "summary": "S" * 2_000,
+                "action_ids": ["claim_admin"],
+                "root_cause": "R" * 2_000,
+                "vulnerability_classification": [
+                    {
+                        "name": "Broken Access Control",
+                        "cwe": "CWE-284",
+                        "owasp": "A01:2021",
+                    }
+                ],
+                "remediation": ["Validate roles server-side."],
+            }
+        ]
+
+        compact = compact_test_results_for_summary(tests)
+        summary = deterministic_assessment_summary(
+            tests,
+            synthesis_error="truncated output",
+        )
+
+        self.assertLessEqual(len(compact[0]["summary"]), 300)
+        self.assertLessEqual(len(compact[0]["root_cause"]), 350)
+        self.assertEqual(summary["overall_security_posture"], "vulnerable")
+        self.assertEqual(summary["findings"][0]["evidence_action_ids"], ["claim_admin"])
+        self.assertIn("truncated output", summary["limitations"][0])
+
+    def test_summary_reconciliation_corrects_counts_and_missing_findings(self) -> None:
+        tests = [
+            {
+                "test_id": "allowed_boundary",
+                "name": "Allowed boundary",
+                "result": "FAIL",
+                "action_ids": ["claim_admin"],
+                "vulnerability_classification": [
+                    {
+                        "name": "Broken Access Control",
+                        "cwe": "CWE-284",
+                        "owasp": "A01:2021",
+                    }
+                ],
+                "remediation": ["Validate claims server-side."],
+            },
+            {
+                "test_id": "denied_boundary",
+                "name": "Denied boundary",
+                "result": "PASS",
+                "action_ids": ["baseline_denied"],
+                "vulnerability_classification": [],
+                "remediation": ["Retain the control."],
+            },
+        ]
+        reconciled = reconcile_assessment_summary(
+            {
+                "overall_security_posture": "secure",
+                "test_summary": "9 tests passed.",
+                "findings": [],
+            },
+            tests,
+        )
+
+        self.assertEqual(reconciled["overall_security_posture"], "vulnerable")
+        self.assertEqual(
+            reconciled["test_summary"],
+            "2 tests executed: 1 PASS, 1 FAIL, and 0 INCONCLUSIVE.",
+        )
+        self.assertEqual(
+            reconciled["findings"][0]["evidence_action_ids"],
+            ["claim_admin"],
         )
 
     def test_independent_audit_can_correct_a_semantic_verdict(self) -> None:

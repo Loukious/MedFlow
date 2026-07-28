@@ -698,6 +698,7 @@ Executed evidence:
             assessment,
             expected_test_ids={item["test_id"] for item in declared_tests},
             observations=self.http_tool.observations,
+            allow_scope_inconclusive=bool(self.discovery_scope_limitation()),
         )
         if errors:
             raise AuthorizationAgentError(
@@ -719,6 +720,7 @@ Executed evidence:
             assessment,
             expected_test_ids=expected_test_ids,
             observations=self.http_tool.observations,
+            allow_scope_inconclusive=bool(self.discovery_scope_limitation()),
         )
         if structural_errors:
             raise AuthorizationAgentError(
@@ -743,6 +745,7 @@ Executed evidence:
             updated,
             expected_test_ids=expected_test_ids,
             observations=self.http_tool.observations,
+            allow_scope_inconclusive=bool(self.discovery_scope_limitation()),
         )
         if errors:
             raise AuthorizationAgentError(
@@ -1374,6 +1377,39 @@ def resume_authorization_assignment(
     provider: str = "gpt_oss",
 ) -> AuthorizationRun:
     document = load_prompt_document(prompt_path, addenda=prompt_addenda)
+    return resume_authorization_document(
+        document,
+        run_dir,
+        provider=provider,
+    )
+
+
+def resume_inline_authorization_assessment(
+    prompt: str,
+    target_url: str,
+    run_dir: Path,
+    *,
+    provider: str = "gpt_oss",
+    allow_mutating_methods: bool = False,
+) -> AuthorizationRun:
+    document = build_inline_prompt_document(
+        prompt,
+        target_url,
+        allow_mutating_methods=allow_mutating_methods,
+    )
+    return resume_authorization_document(
+        document,
+        run_dir,
+        provider=provider,
+    )
+
+
+def resume_authorization_document(
+    document: PromptDocument,
+    run_dir: Path,
+    *,
+    provider: str = "gpt_oss",
+) -> AuthorizationRun:
     resolved_run_dir = run_dir.resolve()
     state = recover_authorization_run(resolved_run_dir)
     accepted_hashes = {document.sha256, document.primary_sha256}
@@ -2440,6 +2476,7 @@ def validate_assessment(
     *,
     expected_test_ids: set[str],
     observations: list[dict[str, Any]],
+    allow_scope_inconclusive: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     tests = assessment.get("tests")
@@ -2502,9 +2539,13 @@ def validate_assessment(
         if "INCONCLUSIVE" in results
         else "secure"
     )
-    if assessment.get("overall_security_posture") != expected_posture:
+    allowed_postures = {expected_posture}
+    if allow_scope_inconclusive and expected_posture == "secure":
+        allowed_postures.add("inconclusive")
+    if assessment.get("overall_security_posture") not in allowed_postures:
+        expected_label = " or ".join(sorted(allowed_postures))
         errors.append(
-            f"overall posture must be {expected_posture} for test results {sorted(results)}"
+            f"overall posture must be {expected_label} for test results {sorted(results)}"
         )
     return errors
 

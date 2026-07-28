@@ -477,6 +477,27 @@ class AuthorizationAgentTests(unittest.TestCase):
             ),
             [],
         )
+        scope_limited = {
+            **assessment,
+            "overall_security_posture": "inconclusive",
+        }
+        self.assertEqual(
+            validate_assessment(
+                scope_limited,
+                expected_test_ids={"object_boundary"},
+                observations=observations,
+                allow_scope_inconclusive=True,
+            ),
+            [],
+        )
+        self.assertIn(
+            "overall posture must be secure",
+            validate_assessment(
+                scope_limited,
+                expected_test_ids={"object_boundary"},
+                observations=observations,
+            )[0],
+        )
 
     def test_completion_budget_adapts_to_provider_tpm_limit(self) -> None:
         class RequestTooLarge(Exception):

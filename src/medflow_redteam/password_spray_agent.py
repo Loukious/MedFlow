@@ -187,6 +187,18 @@ class PasswordSprayAgent:
         for item in attempts:
             outcome = str(item["outcome"])
             counts[outcome] = counts.get(outcome, 0) + 1
+        attempted_identities = list(
+            dict.fromkeys(
+                str(item["username"])
+                for item in attempts
+                if item.get("username")
+            )
+        )
+        attempted_password_indices = {
+            int(item["password_index"])
+            for item in attempts
+            if item.get("password_index") is not None
+        }
         if successes:
             status = "confirmed_credential"
         elif stop_reason == "lockout_or_rate_limit_detected":
@@ -202,6 +214,14 @@ class PasswordSprayAgent:
             "endpoint": endpoint,
             "attempted": len(attempts),
             "successful": len(successes),
+            "username_candidates_loaded": len(identities),
+            "unique_identities_attempted": len(attempted_identities),
+            "password_candidates_loaded": len(passwords),
+            "password_candidates_attempted": len(
+                attempted_password_indices
+            ),
+            "attempted_identities": attempted_identities,
+            "username_template": self.config.username_template,
             "successes": successes,
             "plaintext_credentials_retained": bool(
                 successes and self.config.reveal_credentials

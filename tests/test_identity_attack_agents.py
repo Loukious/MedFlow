@@ -153,7 +153,7 @@ class IdentityAttackAgentTests(unittest.TestCase):
                     password_wordlist_paths=[secrets],
                     wordlist_roots=(root,),
                     username_field="email",
-                    success_json_paths=("authentication.token",),
+                    success_json_paths=("token",),
                     max_passwords=2,
                     max_attempts=2,
                     delay_seconds=0,
@@ -213,6 +213,14 @@ class IdentityAttackAgentTests(unittest.TestCase):
             self.assertEqual(result["successful"], 1)
             self.assertEqual(result["successes"][0]["username_index"], 2)
             self.assertEqual(result["successes"][0]["password_index"], 1)
+            self.assertEqual(result["username_candidates_loaded"], 2)
+            self.assertEqual(result["unique_identities_attempted"], 2)
+            self.assertEqual(result["password_candidates_loaded"], 1)
+            self.assertEqual(result["password_candidates_attempted"], 1)
+            self.assertEqual(
+                result["attempted_identities"],
+                ["other@medflow.test", "test@medflow.test"],
+            )
             self.assertNotIn("password", result["successes"][0])
             self.assertFalse(result["plaintext_credentials_retained"])
             trace_text = trace.read_text(encoding="utf-8")
@@ -277,6 +285,8 @@ class IdentityAttackAgentTests(unittest.TestCase):
             ).run()
             self.assertEqual(spray["successes"][0]["password"], "password")
             self.assertTrue(spray["plaintext_credentials_retained"])
+            self.assertEqual(spray["unique_identities_attempted"], 2)
+            self.assertEqual(spray["password_candidates_attempted"], 2)
             self.assertNotIn(
                 '"password":',
                 spray_trace.read_text(encoding="utf-8"),

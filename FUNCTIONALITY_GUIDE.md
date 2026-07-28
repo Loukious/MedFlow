@@ -909,7 +909,7 @@ the example prompt:
 sudo .venv/bin/python scripts/manage_identity_training_lab.py up
 
 .venv/bin/python scripts/run_redteam_campaign.py \
-  "Run an authorized wordlist attack and password spray against this isolated lab using the synthetic identity root@medflow-agent.test" \
+  "Run an authorized wordlist attack and password spray against this isolated lab using the synthetic identity test@medflow-agent.test" \
   --url http://127.0.0.1:3000/ \
   --execution-mode aggressive_lab \
   --provider local_qwen \
@@ -926,8 +926,9 @@ under ignored `data/labs/runtime/identity_training_lab`.
 sudo .venv/bin/python scripts/manage_identity_training_lab.py status
 ```
 
-The fixture-specific manager creates disposable synthetic accounts from the first three username
-entries and the second password entry. The production discovery and credential agents remain
-generic and contain no Juice Shop-specific endpoint or credential logic. The expected evidence
-shows the Wordlist Agent advancing password positions for one username, while the Spray Agent
-advances usernames before moving to the next password.
+The fixture-specific manager skips the OS-oriented `root` entry and creates disposable synthetic
+accounts from the next three username entries and the second password entry. The production
+discovery and credential agents remain generic and contain no Juice Shop-specific endpoint or
+credential logic. The expected evidence shows the Wordlist Agent validating
+`test@medflow-agent.test`, while the Spray Agent independently advances through its SecLists
+username candidates and confirms a different account.

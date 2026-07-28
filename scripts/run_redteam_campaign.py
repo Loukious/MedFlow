@@ -266,6 +266,9 @@ def password_spray_label(run: CampaignRun) -> str:
         return "not requested"
     return (
         f"{result.get('successful', 0)}/{result.get('attempted', 0)} accepted; "
+        f"users={result.get('unique_identities_attempted', 0)}/"
+        f"{result.get('username_candidates_loaded', 0)}; "
+        f"passwords={result.get('password_candidates_attempted', 0)}; "
         f"stop={result.get('stop_reason', 'unknown')}"
     )
 

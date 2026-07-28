@@ -94,6 +94,21 @@ def response_keys(
     return keys[:limit]
 
 
+def response_signal_present(
+    payload: Any,
+    configured_path: str,
+    observed_paths: list[str],
+) -> bool:
+    if json_path_present(payload, configured_path):
+        return True
+    suffix = f".{configured_path}"
+    return any(
+        observed_path.endswith(suffix)
+        and json_path_present(payload, observed_path)
+        for observed_path in observed_paths
+    )
+
+
 def classify_auth_response(
     response: httpx.Response,
     *,
@@ -119,7 +134,8 @@ def classify_auth_response(
         return "rejected", keys
     if response.status_code in success_statuses:
         if success_json_paths and not any(
-            json_path_present(payload, path) for path in success_json_paths
+            response_signal_present(payload, path, keys)
+            for path in success_json_paths
         ):
             return "inconclusive", keys
         return "authenticated", keys

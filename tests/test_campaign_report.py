@@ -371,3 +371,47 @@ def test_plaintext_lab_credentials_are_visible_and_owner_only(tmp_path) -> None:
     )
     assert stat.S_IMODE(paths["json"].stat().st_mode) == 0o600
     assert stat.S_IMODE(paths["markdown"].stat().st_mode) == 0o600
+
+
+def test_password_spray_report_distinguishes_users_from_http_attempts() -> None:
+    payload = representative_payload()
+    payload["wordlist_attack"] = {}
+    payload["password_spray"] = {
+        "status": "confirmed_credential",
+        "endpoint": "http://127.0.0.1:3000/login",
+        "attempted": 11,
+        "successful": 1,
+        "username_candidates_loaded": 10,
+        "unique_identities_attempted": 10,
+        "password_candidates_loaded": 3,
+        "password_candidates_attempted": 2,
+        "attempted_identities": [
+            "root@medflow-agent.test",
+            "admin@medflow-agent.test",
+        ],
+        "username_template": "{username}@medflow-agent.test",
+        "username_wordlists": [
+            {
+                "path": "data/wordlists/SecLists/Usernames/"
+                "top-usernames-shortlist.txt"
+            }
+        ],
+        "stop_reason": "success_threshold_reached",
+        "lockout_detected": False,
+        "successes": [
+            {
+                "username": "admin@medflow-agent.test",
+                "password_index": 2,
+                "status": 200,
+            }
+        ],
+    }
+
+    markdown = render_campaign_markdown(payload)
+
+    assert "| Password spray | Confirmed Credential | 11 | 10 | 2 | 1 |" in markdown
+    assert "**Username candidates:** 10 loaded; 10 tested" in markdown
+    assert "**Password candidates:** 3 loaded; 2 reached" in markdown
+    assert "top-usernames-shortlist.txt" in markdown
+    assert "root@medflow-agent.test" in markdown
+    assert "admin@medflow-agent.test" in markdown

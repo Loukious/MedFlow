@@ -452,16 +452,27 @@ def append_identity_validation(
         [
             "## Credential Validation",
             "",
-            "| Attack | Status | Attempts | Accepted | Lockout | Stop reason |",
-            "| --- | --- | --- | --- | --- | --- |",
+            (
+                "| Attack | Status | HTTP attempts | Accounts tested | "
+                "Password candidates | Accepted | Lockout | Stop reason |"
+            ),
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
     )
     for name, result in results:
+        accounts_tested = result.get("unique_identities_attempted")
+        if accounts_tested is None:
+            accounts_tested = 1 if integer(result.get("attempted")) else 0
+        password_candidates = result.get("password_candidates_attempted")
+        if password_candidates is None:
+            password_candidates = result.get("attempted")
         lines.append(
             table_row(
                 name,
                 title(result.get("status") or "unknown"),
                 integer(result.get("attempted")),
+                integer(accounts_tested),
+                integer(password_candidates),
                 integer(result.get("successful")),
                 yes_no(result.get("lockout_detected")),
                 title(result.get("stop_reason") or "not recorded"),
@@ -489,6 +500,34 @@ def append_identity_validation(
             lines.append(f"- **Identity:** {code(result['username'])}")
         if result.get("trace_path"):
             lines.append(f"- **Attempt trace:** {code(result['trace_path'])}")
+        if name == "Password spray":
+            lines.extend(
+                [
+                    (
+                        "- **Username candidates:** "
+                        f"{integer(result.get('username_candidates_loaded'))} loaded; "
+                        f"{integer(result.get('unique_identities_attempted'))} tested"
+                    ),
+                    (
+                        "- **Password candidates:** "
+                        f"{integer(result.get('password_candidates_loaded'))} loaded; "
+                        f"{integer(result.get('password_candidates_attempted'))} reached"
+                    ),
+                    (
+                        "- **Username template:** "
+                        f"{code(result.get('username_template') or 'not recorded')}"
+                    ),
+                ]
+            )
+            username_sources = dict_items(result.get("username_wordlists"))
+            if username_sources:
+                lines.append(
+                    "- **Username source:** "
+                    + ", ".join(
+                        code(source.get("path") or "not recorded")
+                        for source in username_sources
+                    )
+                )
         limits = as_dict(result.get("limits"))
         if limits:
             lines.append(
@@ -497,6 +536,17 @@ def append_identity_validation(
                     f"{title(key)}={clean_text(value, 80)}"
                     for key, value in limits.items()
                 )
+            )
+        attempted_identities = string_items(
+            result.get("attempted_identities")
+        )
+        if attempted_identities:
+            lines.extend(
+                [
+                    "",
+                    "**Accounts tested:** "
+                    + ", ".join(code(identity) for identity in attempted_identities),
+                ]
             )
         successes = dict_items(result.get("successes"))
         if successes:

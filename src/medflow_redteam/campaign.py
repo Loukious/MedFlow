@@ -1896,6 +1896,10 @@ Write the final campaign brief with:
 7. ATT&CK/detection mapping from retrieved evidence only
 8. Safety constraints
 9. Limitations and next implementation work
+
+For password spraying, `attempted` is the number of HTTP requests, not the
+number of users or passwords. Report `unique_identities_attempted` and
+`password_candidates_attempted` exactly; do not infer those counts.
 """
         fallback_report = deterministic_campaign_report(state, safety_review)
         try:
@@ -2070,7 +2074,15 @@ def deterministic_campaign_report(state: CampaignState, safety_review: str) -> s
                 "",
                 "## Password Spray Validation",
                 f"- Status: {spray_result.get('status', 'unknown')}",
-                f"- Attempts: {spray_result.get('attempted', 0)}",
+                f"- HTTP attempts: {spray_result.get('attempted', 0)}",
+                (
+                    "- Unique accounts tested: "
+                    f"{spray_result.get('unique_identities_attempted', 0)}"
+                ),
+                (
+                    "- Password candidates reached: "
+                    f"{spray_result.get('password_candidates_attempted', 0)}"
+                ),
                 f"- Accepted credentials: {spray_result.get('successful', 0)}",
                 f"- Stop reason: {spray_result.get('stop_reason', 'unknown')}",
             ]

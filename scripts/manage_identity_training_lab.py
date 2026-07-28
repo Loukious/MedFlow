@@ -225,7 +225,7 @@ def seed_synthetic_accounts(url: str) -> list[dict[str, Any]]:
     password_paths = [ROOT / path for path in DEFAULT_PASSWORD_WORDLISTS]
     usernames, _ = load_wordlist(
         username_paths,
-        limit=3,
+        limit=4,
         allowed_roots=[ROOT / "data" / "wordlists"],
     )
     passwords, _ = load_wordlist(
@@ -233,7 +233,7 @@ def seed_synthetic_accounts(url: str) -> list[dict[str, Any]]:
         limit=2,
         allowed_roots=[ROOT / "data" / "wordlists"],
     )
-    if len(usernames) < 3 or len(passwords) < 2:
+    if len(usernames) < 4 or len(passwords) < 2:
         raise RuntimeError(
             "The SecLists subset is incomplete. Run "
             "scripts/download_redteam_wordlists.py first."
@@ -243,7 +243,8 @@ def seed_synthetic_accounts(url: str) -> list[dict[str, Any]]:
     login_url = url.rstrip("/") + "/rest/user/login"
     results = []
     with httpx.Client(timeout=5, follow_redirects=False) as client:
-        for username in usernames:
+        # Skip SecLists' OS-oriented "root" entry for this web-login fixture.
+        for username in usernames[1:4]:
             identity = f"{username}@{SYNTHETIC_DOMAIN}"
             registration = client.post(
                 registration_url,
@@ -256,25 +257,26 @@ def seed_synthetic_accounts(url: str) -> list[dict[str, Any]]:
             if registration.status_code == 201:
                 status = "created"
             else:
-                login = client.post(
-                    login_url,
-                    json={
-                        "email": identity,
-                        "password": fixture_password,
-                    },
-                )
-                if login.status_code != 200:
-                    raise RuntimeError(
-                        f"Could not create or verify {identity}: "
-                        f"registration={registration.status_code}, "
-                        f"login={login.status_code}"
-                    )
                 status = "existing_verified"
+            login = client.post(
+                login_url,
+                json={
+                    "email": identity,
+                    "password": fixture_password,
+                },
+            )
+            if login.status_code != 200:
+                raise RuntimeError(
+                    f"Could not create or verify {identity}: "
+                    f"registration={registration.status_code}, "
+                    f"login={login.status_code}"
+                )
             results.append(
                 {
                     "identity": identity,
                     "status": status,
                     "registration_status": registration.status_code,
+                    "login_status": login.status_code,
                 }
             )
     return results

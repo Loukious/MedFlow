@@ -27,6 +27,7 @@ dependencies = [
   "pymetasploit3",
   "playwright",
   "httpx",
+  "PyYAML",
   "schemathesis>=4.24,<5",
 ]
 

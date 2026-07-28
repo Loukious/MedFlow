@@ -86,8 +86,8 @@ The current kill chain is intentionally small:
 - Reconnaissance: discover open services.
 - Target selection: choose the highest-scoring matching capabilities from the generated inventory.
 - Exploitation: trigger the controlled lab-only command execution proof.
-- Command execution proof: verify the output of `id`.
-- Cleanup: remove the temporary proof file.
+- Command execution proof: select a bounded harmless command for the inferred target platform and parse its output; session payloads also run that command through `sessions -c`.
+- Cleanup: terminate any Metasploit sessions. Proof commands do not create target files.
 
 It does not perform persistence, privilege escalation, lateral movement, credential theft, or destructive actions.
 
@@ -532,7 +532,18 @@ To let MedFlow start `msfrpcd` when RPC is selected:
 export MEDFLOW_START_MSFRPCD=1
 ```
 
-The command planner does not allow arbitrary shell. Nmap plans must use the exact target and exact port list. Metasploit plans must use the selected module, set the exact target, and use only validated resource commands such as `use`, `set`, `check`, `run -j`, `sessions -l`, `sessions -K`, and `exit -y`.
+The command planner does not allow arbitrary shell. Nmap plans must use the exact target and exact port list. Metasploit plans must use the selected module, set the exact target, and use only validated resource commands such as `use`, `set`, `check`, `run -j`, `sessions -l`, bounded `sessions -c`, `sessions -K`, and `exit -y`.
+
+RCE proof is platform-aware:
+
+| Inferred platform | Bounded proof commands | Deterministic fallback |
+| --- | --- | --- |
+| Unix/Linux/BSD/Solaris/AIX | `id`, `whoami`, `pwd`, `hostname`, `uname -a`, marker | `id` |
+| Windows | marker, `whoami`, `hostname`, `cd`, `ver` | marker |
+| macOS | `id`, `whoami`, `pwd`, `hostname`, `sw_vers`, `uname -a`, marker | `id` |
+| Unknown | marker, `whoami`, `hostname` | marker |
+
+The marker command is `echo MEDFLOW_RCE_PROOF_7F3A`; the parser requires the exact marker on a separate output line. The command-plan audit line is excluded from proof parsing, so merely logging the planned marker cannot create a false positive. `proof_command_plan`, `proof_platform`, `proof_command`, `command_proof`, and the per-payload attempt list are retained in JSON/debug output.
 
 ## Debug Review
 

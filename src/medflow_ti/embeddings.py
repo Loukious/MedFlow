@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from sentence_transformers import SentenceTransformer
 
@@ -103,6 +103,14 @@ def embed_texts(texts: Iterable[str], model_name: str = "BAAI/bge-base-en-v1.5")
         show_progress_bar=True,
     )
     return vectors.tolist()
+
+
+def embedding_tokenizer(model_name: str = "BAAI/bge-base-en-v1.5") -> Any:
+    return model(model_name).tokenizer
+
+
+def embedding_max_sequence_length(model_name: str = "BAAI/bge-base-en-v1.5") -> int:
+    return int(model(model_name).max_seq_length)
 
 
 def embedding_device() -> str:

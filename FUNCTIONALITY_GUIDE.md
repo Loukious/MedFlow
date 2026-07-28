@@ -931,3 +931,52 @@ accounts from the next three username entries and the second password entry. The
 discovery and credential agents remain generic. The expected evidence shows the Wordlist Agent
 validating `test`, while the Spray Agent independently advances through its unmodified SecLists
 username candidates and confirms `admin`.
+
+## 20. Source-Aware Web Knowledge Ingestion
+
+`config/web_appsec_sources.json` defines both each upstream repository and its ingestion policy.
+Running the sync command without `--sources` refreshes all four cloneable sources:
+
+```bash
+.venv/bin/python scripts/sync_web_appsec_sources.py --refresh
+.venv/bin/python -m medflow_ti.cli ingest-web-appsec
+```
+
+The methodology collection accepts only WSTG chapters/checklists and published OWASP cheat sheets.
+The payload collection combines the three curated seed probes with sanitized
+PayloadsAllTheThings vulnerability taxonomy and metadata parsed from Nuclei HTTP templates.
+Payload files, fenced examples, and Nuclei request/execution blocks are not copied into Chroma.
+
+Chunk boundaries use the tokenizer for `BAAI/bge-base-en-v1.5`. Each complete stored document,
+including its source prefix and special tokens, fits the model's 512-token limit; content chunks
+overlap by 64 tokens. A normal ingestion deletes and recreates only the two web collections, which
+removes documents excluded by revised filters. `--append` is available for intentional upserts.
+
+The verified 2026-07-28 rebuild contains 1,961 methodology documents and 11,363 payload/capability
+documents. Its 13,324 documents represent 3,030,263 local embedding-input tokens, with zero
+over-limit documents. The whole corpus is not added to an LLM prompt; retrieval supplies only the
+highest-ranked chunks. Exact CVE and CWE identifiers receive an explicit ranking boost, so
+CVE-specific Nuclei metadata is preferred over semantically similar generic guidance.
+
+Run `.venv/bin/python scripts/audit_web_appsec_kb.py` to recalculate collection and per-source
+document counts, embedding-input tokens, percentiles, and over-limit counts after any refresh.
+Add `--json` for the complete sync manifest and machine-readable audit.
+
+## 21. Platform-Aware RCE Proof
+
+Metasploit and Toolsmith validators no longer assume a Linux target. The proof planner infers
+`unix`, `windows`, `macos`, or `unknown` from the selected payload, module metadata, platform,
+targets, description, and observed service evidence.
+
+- Unix-family targets may use `id`, `whoami`, `pwd`, `hostname`, or `uname -a`.
+- Windows targets may use `whoami`, `hostname`, `cd`, or `ver`.
+- macOS targets may also use `sw_vers`.
+- Every profile permits the cross-platform marker `echo MEDFLOW_RCE_PROOF_7F3A`; it is the fallback
+  when the platform is unknown.
+
+Direct `cmd/unix/generic` and `cmd/windows/generic` payloads receive the validated command through
+`CMD`. Session payloads run the same bounded command through Metasploit `sessions -c` before session
+cleanup. Generated Python tools receive an equivalent `proof_policy` in their runtime context.
+Reports retain the inferred platform, selected command, parsed output, and every payload attempt.
+The parser ignores the logged command plan and accepts marker proof only when the exact marker
+appears as target output.

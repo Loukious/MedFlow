@@ -26,11 +26,14 @@ from medflow_redteam.campaign import (
 )
 from medflow_redteam.capabilities import capability_match_score, select_capabilities_for_services
 from medflow_redteam.command_planner import (
+    PROOF_MARKER,
     fallback_metasploit_resource,
     fallback_nmap_plan,
     fallback_proof_command,
     fallback_recon_strategy,
     fallback_validation_strategy,
+    infer_proof_platform,
+    proof_commands_for_platform,
     validate_recon_strategy,
     validate_metasploit_resource,
     validate_nmap_argv,
@@ -39,6 +42,7 @@ from medflow_redteam.command_planner import (
 )
 from medflow_redteam.generated_tools import (
     apply_quality_result_gate,
+    generated_tool_proof_policy,
     load_generated_tool_specs,
     resolve_generated_tool_code,
     validate_generated_tool_code,
@@ -46,7 +50,14 @@ from medflow_redteam.generated_tools import (
 )
 from medflow_redteam.evidence import normalize_authorization_evidence
 from medflow_redteam.identity import analyze_identity_logs
-from medflow_redteam.metasploit_runner import first_interesting_line, has_command_output_proof, payload_attempts
+from medflow_redteam.metasploit_planner import select_payload_candidates
+from medflow_redteam.metasploit_runner import (
+    first_interesting_line,
+    has_command_output_proof,
+    payload_attempts,
+    run_metasploit_module,
+    supports_direct_proof_command,
+)
 from medflow_redteam.tools import normalize_validation_status, route_technology_signals, web_control_checks
 from medflow_redteam.tool_quality import (
     artifact_hash,
@@ -926,6 +937,36 @@ class RedTeamCoreTests(unittest.TestCase):
             ),
             msf_plan["resource_lines"],
         )
+        windows_session_plan = fallback_metasploit_resource(
+            "172.29.10.10",
+            "exploit/windows/http/example_rce",
+            {"RPORT": "8080"},
+            "windows/meterpreter/reverse_tcp",
+            "exploit",
+            session_proof_command=f"echo {PROOF_MARKER}",
+        )
+        self.assertIn(
+            f"sessions -c 'echo {PROOF_MARKER}'",
+            windows_session_plan["resource_lines"],
+        )
+        with self.assertRaises(ValueError):
+            validate_metasploit_resource(
+                [
+                    "use exploit/windows/http/example_rce",
+                    "set RHOSTS 172.29.10.10",
+                    "set PAYLOAD windows/meterpreter/reverse_tcp",
+                    "run -j",
+                    "sleep 12",
+                    "sessions -l",
+                    "sessions -c whoami",
+                    "sessions -K",
+                    "exit -y",
+                ],
+                "172.29.10.10",
+                "exploit/windows/http/example_rce",
+                "exploit",
+                expected_session_proof_command=f"echo {PROOF_MARKER}",
+            )
         self.assertEqual(
             validate_metasploit_resource(
                 [
@@ -985,8 +1026,23 @@ class RedTeamCoreTests(unittest.TestCase):
             )
 
     def test_rce_proof_commands_are_constrained_and_prioritized(self) -> None:
-        self.assertEqual(fallback_proof_command()["command"], "id")
+        marker_command = f"echo {PROOF_MARKER}"
+        self.assertEqual(fallback_proof_command()["command"], marker_command)
+        self.assertEqual(
+            fallback_proof_command({"module": "exploit/unix/irc/example"})["command"],
+            "id",
+        )
+        windows_plan = fallback_proof_command({"platform": ["windows"]})
+        self.assertEqual(windows_plan["platform"], "windows")
+        self.assertEqual(windows_plan["command"], marker_command)
+        self.assertIn("ver", windows_plan["candidates"])
+        self.assertNotIn("uname -a", windows_plan["candidates"])
+        self.assertIn("sw_vers", proof_commands_for_platform("macos"))
+
         self.assertEqual(validate_proof_command(" uname   -a "), "uname -a")
+        self.assertEqual(validate_proof_command(" ver ", platform="windows"), "ver")
+        with self.assertRaises(ValueError):
+            validate_proof_command("uname -a", platform="windows")
         with self.assertRaises(ValueError):
             validate_proof_command("cat /etc/passwd")
 
@@ -1001,9 +1057,186 @@ class RedTeamCoreTests(unittest.TestCase):
         )
         self.assertEqual(payloads[0], "cmd/unix/generic")
 
+        windows_payloads = payload_attempts(
+            {
+                "selected_payload": "windows/meterpreter/reverse_tcp",
+                "payload_candidates": [
+                    {"payload": "windows/meterpreter/reverse_tcp"},
+                    {"payload": "cmd/unix/generic"},
+                    {"payload": "cmd/windows/generic"},
+                ],
+            }
+        )
+        self.assertEqual(windows_payloads[0], "cmd/windows/generic")
+        self.assertTrue(supports_direct_proof_command("cmd/unix/generic"))
+        self.assertTrue(supports_direct_proof_command("cmd/windows/generic"))
+
         output = "random\nuid=1000(app) gid=1000(app) groups=1000(app)\n"
         self.assertTrue(has_command_output_proof(output, "id"))
         self.assertEqual(first_interesting_line(output, "id"), "uid=1000(app) gid=1000(app) groups=1000(app)")
+
+        metadata_only = (
+            f'[medflow_command_plan] {{"resource_lines":["set CMD {marker_command}"]}}\n'
+        )
+        self.assertFalse(has_command_output_proof(metadata_only, marker_command))
+        marker_output = f"{metadata_only}{PROOF_MARKER}\n"
+        self.assertTrue(has_command_output_proof(marker_output, marker_command))
+        self.assertEqual(first_interesting_line(marker_output, marker_command), PROOF_MARKER)
+        self.assertTrue(has_command_output_proof(r"CORP\svc_web", "whoami"))
+        self.assertTrue(has_command_output_proof(r"C:\Windows\System32", "cd"))
+        self.assertTrue(
+            has_command_output_proof(
+                "Microsoft Windows [Version 10.0.20348.1]",
+                "ver",
+            )
+        )
+        self.assertTrue(
+            has_command_output_proof(
+                "Darwin host 23.6.0 Darwin Kernel Version 23.6.0",
+                "uname -a",
+            )
+        )
+        self.assertTrue(has_command_output_proof("ProductVersion: 14.6.1", "sw_vers"))
+
+    def test_rce_platform_inference_and_generated_tool_policy(self) -> None:
+        self.assertEqual(
+            infer_proof_platform({"selected_payload": "windows/x64/meterpreter/reverse_tcp"}),
+            "windows",
+        )
+        self.assertEqual(
+            infer_proof_platform({"module": "exploit/unix/irc/example"}),
+            "unix",
+        )
+        self.assertEqual(
+            infer_proof_platform({"description": "Apple macOS Darwin target"}),
+            "macos",
+        )
+        self.assertEqual(infer_proof_platform({}), "unknown")
+
+        policy = generated_tool_proof_policy(
+            {
+                "id": "generated:windows-validator",
+                "platform": ["windows"],
+            },
+            {"matched_service": {"service": "microsoft-ds"}},
+        )
+        self.assertEqual(policy["platform"], "windows")
+        self.assertEqual(policy["default_command"], f"echo {PROOF_MARKER}")
+        self.assertIn("ver", policy["allowed_commands"])
+        self.assertNotIn("pwd", policy["allowed_commands"])
+
+    def test_windows_metasploit_direct_proof_injects_validated_command(self) -> None:
+        plan = {
+            "module_path": "exploit/windows/http/example_rce",
+            "module_id": "metasploit:exploit/windows/http/example_rce",
+            "options": {"RHOSTS": "<target>", "RPORT": "8080"},
+            "selected_payload": "cmd/windows/generic",
+            "payload_candidates": [{"payload": "cmd/windows/generic"}],
+        }
+        completed = SimpleNamespace(returncode=0)
+        with (
+            patch(
+                "medflow_redteam.metasploit_runner.plan_metasploit_execution",
+                return_value=plan,
+            ),
+            patch(
+                "medflow_redteam.metasploit_runner.shutil.which",
+                return_value="/usr/bin/msfconsole",
+            ),
+            patch(
+                "medflow_redteam.metasploit_runner.run_msfconsole_action",
+                return_value=(
+                    completed,
+                    f"{PROOF_MARKER}\n",
+                    "",
+                    0.05,
+                    ["msfconsole"],
+                ),
+            ) as execute,
+        ):
+            result = run_metasploit_module(
+                "10.10.10.10",
+                {
+                    "platform": ["windows"],
+                    "matched_service": {"port": 8080, "service": "http"},
+                },
+                execution_mode="aggressive_lab",
+                action="exploit",
+                use_llm=False,
+            )
+
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["exploited"])
+        self.assertEqual(result["proof_output"], PROOF_MARKER)
+        self.assertEqual(result["metasploit_check"]["proof_platform"], "windows")
+        self.assertEqual(
+            execute.call_args.args[2]["CMD"],
+            f"echo {PROOF_MARKER}",
+        )
+
+    def test_windows_metasploit_session_runs_proof_before_cleanup(self) -> None:
+        plan = {
+            "module_path": "exploit/windows/http/example_rce",
+            "module_id": "metasploit:exploit/windows/http/example_rce",
+            "options": {"RHOSTS": "<target>", "RPORT": "8080"},
+            "selected_payload": "windows/meterpreter/reverse_tcp",
+            "payload_candidates": [
+                {"payload": "windows/meterpreter/reverse_tcp"},
+            ],
+        }
+        completed = SimpleNamespace(returncode=0)
+        with (
+            patch(
+                "medflow_redteam.metasploit_runner.plan_metasploit_execution",
+                return_value=plan,
+            ),
+            patch(
+                "medflow_redteam.metasploit_runner.shutil.which",
+                return_value="/usr/bin/msfconsole",
+            ),
+            patch(
+                "medflow_redteam.metasploit_runner.run_msfconsole_action",
+                return_value=(
+                    completed,
+                    (
+                        "[*] Meterpreter session 1 opened\n"
+                        f"{PROOF_MARKER}\n"
+                        "[*] Killing all sessions\n"
+                    ),
+                    "",
+                    0.05,
+                    ["msfconsole"],
+                ),
+            ) as execute,
+        ):
+            result = run_metasploit_module(
+                "10.10.10.10",
+                {
+                    "platform": ["windows"],
+                    "matched_service": {"port": 8080, "service": "http"},
+                },
+                execution_mode="aggressive_lab",
+                action="exploit",
+                use_llm=False,
+            )
+
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["exploited"])
+        self.assertTrue(result["metasploit_check"]["command_proof"])
+        self.assertEqual(
+            execute.call_args.kwargs["session_proof_command"],
+            f"echo {PROOF_MARKER}",
+        )
+
+    def test_windows_payload_metadata_adds_direct_command_candidate(self) -> None:
+        payloads = select_payload_candidates(
+            {
+                "id": "metasploit:exploit/example",
+                "default_payloads": ["windows/meterpreter/reverse_tcp"],
+            }
+        )
+        names = [candidate.payload for candidate in payloads]
+        self.assertIn("cmd/windows/generic", names)
 
     def test_llm_strategy_outputs_are_constrained(self) -> None:
         recon = validate_recon_strategy(

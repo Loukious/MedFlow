@@ -13,6 +13,7 @@ from pathlib import Path
 from queue import Empty
 from typing import Any
 
+from .command_planner import PROOF_MARKER, fallback_proof_command
 from .config_loader import ROOT, load_lab_config
 from .tool_quality import (
     EXECUTABLE_STATES,
@@ -48,6 +49,26 @@ BLOCKED_CALLS = {"eval", "exec", "compile", "input", "open", "__import__"}
 class GeneratedToolValidation:
     ok: bool
     errors: list[str]
+
+
+def generated_tool_proof_policy(
+    spec: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    plan = fallback_proof_command(
+        {
+            "module": spec.get("module_path") or spec.get("id") or "",
+            "platform": spec.get("platform") or [],
+            "targets": spec.get("targets") or [],
+            "description": spec.get("description") or "",
+            "service": context.get("matched_service") or context.get("service") or {},
+        }
+    )
+    return {
+        "platform": plan["platform"],
+        "default_command": plan["command"],
+        "allowed_commands": plan["candidates"],
+    }
 
 
 def load_generated_tool_specs() -> list[dict[str, Any]]:
@@ -212,12 +233,15 @@ def execute_generated_tool(target: str, spec: dict[str, Any], context: dict[str,
         }
 
     lab = load_lab_config()
+    proof_policy = generated_tool_proof_policy(spec, context)
     tool_context = {
         **context,
         "target": target,
         "capability": spec,
         "lab": lab,
-        "proof_marker": "/tmp/medflow_langgraph_exploit_poc",
+        "proof_marker": PROOF_MARKER,
+        "proof_command": proof_policy["default_command"],
+        "proof_policy": proof_policy,
         "tmp_dir": tempfile.gettempdir(),
     }
     started = time.perf_counter()

@@ -55,8 +55,12 @@ def client(path: Path) -> chromadb.PersistentClient:
 
 
 def reset_collections(chroma_path: Path) -> None:
+    reset_named_collections(chroma_path, COLLECTIONS)
+
+
+def reset_named_collections(chroma_path: Path, collection_names: tuple[str, ...] | list[str]) -> None:
     db = client(chroma_path)
-    for name in COLLECTIONS:
+    for name in collection_names:
         try:
             db.delete_collection(name)
         except Exception:
@@ -117,6 +121,13 @@ def _rerank_score(question: str, hit: dict) -> tuple[float, float, float]:
             metadata.get("type", ""),
             metadata.get("dataset", ""),
             metadata.get("source_file", ""),
+            metadata.get("source_path", ""),
+            metadata.get("category", ""),
+            metadata.get("template_id", ""),
+            metadata.get("cve", ""),
+            metadata.get("cwe", ""),
+            metadata.get("tags", ""),
+            metadata.get("severity", ""),
         ]
         if value
     )
@@ -140,6 +151,15 @@ def _rerank_score(question: str, hit: dict) -> tuple[float, float, float]:
         score += 0.18
     if detection_intent and metadata.get("type") == "course-of-action":
         score -= 0.06
+    requested_identifiers = set(
+        re.findall(r"\b(?:cve-\d{4}-\d{4,}|cwe-\d+)\b", question.lower())
+    )
+    matched_identifiers = {
+        identifier
+        for identifier in requested_identifiers
+        if identifier in searchable.lower()
+    }
+    score += min(0.4, len(matched_identifiers) * 0.3)
     return score, semantic_score, lexical_score
 
 

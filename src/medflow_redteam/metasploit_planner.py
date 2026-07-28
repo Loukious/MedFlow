@@ -63,6 +63,10 @@ def infer_target_uri(capability: dict[str, Any], service: dict[str, Any]) -> str
 
 def select_payload_candidates(capability: dict[str, Any], service: dict[str, Any] | None = None) -> list[PayloadCandidate]:
     text = capability_text(capability, service)
+    default_payloads = [
+        str(payload).lower()
+        for payload in capability.get("default_payloads") or []
+    ]
     candidates: dict[str, tuple[int, list[str]]] = {}
 
     def add(payload: str, score: int, reason: str) -> None:
@@ -89,9 +93,16 @@ def select_payload_candidates(capability: dict[str, Any], service: dict[str, Any
     if "rocketmq" in text or "activemq" in text or "cmd/linux/http" in text:
         add("cmd/linux/http/x64/meterpreter/reverse_tcp", 72, "HTTP-capable Linux command target candidate")
 
-    if "windows" in text or " win " in text:
+    windows_evidence = (
+        "windows" in text
+        or " win " in text
+        or any("windows" in payload for payload in default_payloads)
+    )
+    if windows_evidence:
+        add("cmd/windows/generic", 65, "Direct Windows command proof candidate")
         add("windows/meterpreter/reverse_tcp", 45, "Windows target candidate")
     else:
+        add("cmd/windows/generic", -35, "No Windows evidence; keep low priority")
         add("windows/meterpreter/reverse_tcp", -35, "No Windows evidence; keep low priority")
 
     add("generic/shell_reverse_tcp", 20, "Fallback reverse shell payload")
@@ -145,6 +156,12 @@ def acceptable_payloads_for_module(module_path: str, default_payloads: list[str]
         payloads.extend(["cmd/linux/http/x64/meterpreter/reverse_tcp", "cmd/unix/reverse_bash"])
     if "couchdb" in text:
         payloads.extend(["linux/x64/shell_reverse_tcp", "cmd/unix/reverse_openssl", "cmd/unix/reverse_bash"])
+    if "windows" in text:
+        payloads.extend(["cmd/windows/generic", "windows/meterpreter/reverse_tcp"])
     if not payloads:
-        payloads.append("cmd/unix/reverse_bash")
+        payloads.append(
+            "cmd/windows/generic"
+            if "windows" in text
+            else "cmd/unix/reverse_bash"
+        )
     return sorted(set(payloads))

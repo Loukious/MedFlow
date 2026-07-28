@@ -16,4 +16,5 @@ fastapi
 uvicorn[standard]
 pymetasploit3
 httpx
+PyYAML
 schemathesis>=4.24,<5

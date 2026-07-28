@@ -43,12 +43,34 @@ ALLOWED_SET_KEYS = {
     "URI",
     "VHOST",
 }
+PROOF_MARKER = "MEDFLOW_RCE_PROOF_7F3A"
 ALLOWED_PROOF_COMMANDS = {
+    f"echo {PROOF_MARKER}": "Emit a deterministic marker using a common shell built-in.",
     "id": "Show the effective Unix user and groups.",
-    "whoami": "Show the effective username.",
-    "pwd": "Show the current working directory.",
-    "hostname": "Show the target hostname.",
-    "uname -a": "Show kernel/platform information.",
+    "whoami": "Show the effective username on Unix or Windows.",
+    "pwd": "Show the current Unix working directory.",
+    "hostname": "Show the target hostname on Unix or Windows.",
+    "uname -a": "Show Unix kernel/platform information.",
+    "cd": "Show the current Windows command-shell directory.",
+    "ver": "Show the Windows command-shell version.",
+    "sw_vers": "Show the macOS product and version.",
+}
+PROOF_COMMAND_PLATFORMS = {
+    f"echo {PROOF_MARKER}": {"unknown", "unix", "windows", "macos"},
+    "id": {"unix", "macos"},
+    "whoami": {"unknown", "unix", "windows", "macos"},
+    "pwd": {"unix", "macos"},
+    "hostname": {"unknown", "unix", "windows", "macos"},
+    "uname -a": {"unix", "macos"},
+    "cd": {"windows"},
+    "ver": {"windows"},
+    "sw_vers": {"macos"},
+}
+PROOF_COMMAND_PREFERENCES = {
+    "unix": ["id", "whoami", "pwd", "hostname", "uname -a", f"echo {PROOF_MARKER}"],
+    "windows": [f"echo {PROOF_MARKER}", "whoami", "hostname", "cd", "ver"],
+    "macos": ["id", "whoami", "pwd", "hostname", "sw_vers", "uname -a", f"echo {PROOF_MARKER}"],
+    "unknown": [f"echo {PROOF_MARKER}", "whoami", "hostname"],
 }
 
 
@@ -142,12 +164,26 @@ def plan_metasploit_resource(
     selected_payload: str,
     action: str,
     *,
+    session_proof_command: str = "",
     provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
-    fallback = fallback_metasploit_resource(target, module_path, options, selected_payload, action)
+    fallback = fallback_metasploit_resource(
+        target,
+        module_path,
+        options,
+        selected_payload,
+        action,
+        session_proof_command=session_proof_command,
+    )
     if not use_llm:
         return fallback
+    expected_cmd = str(options.get("CMD") or "")
+    proof_instruction = (
+        f'- After sessions -l, run exactly: {format_session_proof_line(session_proof_command)}'
+        if session_proof_command
+        else "- Do not add a sessions -c command for this direct-output payload."
+    )
     prompt = f"""
 You generate a Metasploit resource command plan for an authorized isolated lab.
 
@@ -155,6 +191,7 @@ Module: {module_path}
 Target host: {target}
 Action: {action}
 Selected payload: {selected_payload or "(none)"}
+Session proof command: {session_proof_command or "(not applicable)"}
 Options JSON:
 {json.dumps(options, indent=2, default=str)}
 
@@ -167,17 +204,25 @@ Return strict JSON only:
 Rules:
 - Use exactly module {module_path}.
 - Set RHOSTS to exactly {target}.
-- Use only resource lines beginning with: use, set, check, run -j, sleep, sessions -l, sessions -K, exit -y.
+- Use only resource lines beginning with: use, set, check, run -j, sleep, sessions -l, sessions -c, sessions -K, exit -y.
 - Do not include shell commands, backticks, semicolons inside values, file writes, persistence, credential dumping, or evasion.
 - If action is check, end with check and exit -y.
 - If action is exploit, use run -j, sleep, sessions -l, sessions -K, exit -y.
-- For cmd/unix/generic exploit payloads, set CMD to the exact value already present in Options JSON.
+- For cmd/unix/generic or cmd/windows/generic, set CMD to the exact value already present in Options JSON.
+{proof_instruction}
 """
     try:
         raw = call_redteam_llm(prompt, settings=load_settings(), provider=provider)
         parsed = parse_json(raw)
         lines = [str(item) for item in parsed.get("resource_lines", [])]
-        validated = validate_metasploit_resource(lines, target, module_path, action)
+        validated = validate_metasploit_resource(
+            lines,
+            target,
+            module_path,
+            action,
+            expected_cmd=expected_cmd,
+            expected_session_proof_command=session_proof_command,
+        )
         return {
             "resource_lines": validated,
             "reason": str(parsed.get("reason") or "LLM generated a validated Metasploit resource plan."),
@@ -196,6 +241,8 @@ def fallback_metasploit_resource(
     options: dict[str, Any],
     selected_payload: str,
     action: str,
+    *,
+    session_proof_command: str = "",
 ) -> dict[str, Any]:
     resource_lines = [f"use {module_path}"]
     merged_options = {**options, "RHOSTS": target}
@@ -206,25 +253,60 @@ def fallback_metasploit_resource(
             resource_lines.append(f"set {key} {value}")
     if selected_payload:
         resource_lines.append(f"set PAYLOAD {selected_payload}")
-    if action == "exploit" and selected_payload == "cmd/unix/generic" and not any(line.startswith("set CMD ") for line in resource_lines):
-        resource_lines.append("set CMD id")
+    if (
+        action == "exploit"
+        and selected_payload in {"cmd/unix/generic", "cmd/windows/generic"}
+        and not any(line.startswith("set CMD ") for line in resource_lines)
+    ):
+        proof_plan = fallback_proof_command(
+            {
+                "selected_payload": selected_payload,
+                "module": module_path,
+            }
+        )
+        resource_lines.append(f"set CMD {proof_plan['command']}")
     if action == "exploit":
-        resource_lines.extend(["run -j", "sleep 12", "sessions -l", "sessions -K", "exit -y"])
+        resource_lines.extend(["run -j", "sleep 12", "sessions -l"])
+        if session_proof_command:
+            resource_lines.append(format_session_proof_line(session_proof_command))
+        resource_lines.extend(["sessions -K", "exit -y"])
     else:
         resource_lines.extend(["check", "exit -y"])
     return {
-        "resource_lines": validate_metasploit_resource(resource_lines, target, module_path, action),
+        "resource_lines": validate_metasploit_resource(
+            resource_lines,
+            target,
+            module_path,
+            action,
+            expected_cmd=str(options.get("CMD") or ""),
+            expected_session_proof_command=session_proof_command,
+        ),
         "reason": "Deterministic fallback Metasploit resource plan.",
         "generated_by": "fallback",
     }
 
 
-def validate_metasploit_resource(lines: list[str], target: str, module_path: str, action: str) -> list[str]:
+def format_session_proof_line(command: str) -> str:
+    validated = validate_proof_command(command)
+    return f"sessions -c {shlex.quote(validated)}"
+
+
+def validate_metasploit_resource(
+    lines: list[str],
+    target: str,
+    module_path: str,
+    action: str,
+    *,
+    expected_cmd: str = "",
+    expected_session_proof_command: str = "",
+) -> list[str]:
     if not lines or lines[0] != f"use {module_path}":
         raise ValueError("Metasploit plan must begin with the selected module.")
     if any(";" in line or "`" in line or "$(" in line for line in lines):
         raise ValueError("Metasploit resource lines cannot contain shell chaining or substitution.")
     has_target = False
+    command_option_seen = False
+    session_proof_seen = False
     for line in lines:
         parts = shlex.split(line)
         if not parts:
@@ -240,7 +322,10 @@ def validate_metasploit_resource(lines: list[str], target: str, module_path: str
             if key not in ALLOWED_SET_KEYS:
                 raise ValueError(f"Metasploit option not allowed: {key}")
             if key == "CMD":
-                validate_proof_command(value)
+                value = validate_proof_command(value)
+                if expected_cmd and value != validate_proof_command(expected_cmd):
+                    raise ValueError("Metasploit CMD must match the selected proof command.")
+                command_option_seen = True
             if key in {"RHOST", "RHOSTS"}:
                 if value != target:
                     raise ValueError("Metasploit target option must match exact target.")
@@ -251,16 +336,33 @@ def validate_metasploit_resource(lines: list[str], target: str, module_path: str
             continue
         elif re.fullmatch(r"sleep\s+\d{1,2}", line):
             continue
+        elif parts[:2] == ["sessions", "-c"]:
+            if len(parts) != 3:
+                raise ValueError("Metasploit sessions -c requires one quoted proof command.")
+            session_command = validate_proof_command(parts[2])
+            if (
+                expected_session_proof_command
+                and session_command
+                != validate_proof_command(expected_session_proof_command)
+            ):
+                raise ValueError(
+                    "Metasploit session command must match the selected proof command."
+                )
+            session_proof_seen = True
         elif line in {"sessions -l", "sessions -K", "exit -y"}:
             continue
         else:
             raise ValueError(f"Metasploit resource line not allowed: {line}")
     if not has_target:
         raise ValueError("Metasploit plan must set RHOSTS/RHOST to the exact target.")
+    if expected_cmd and not command_option_seen:
+        raise ValueError("Metasploit plan must set the selected direct proof command.")
     if action == "exploit":
         required = {"run -j", "sessions -l", "sessions -K", "exit -y"}
         if not required.issubset(set(lines)):
             raise ValueError("Exploit plan must run, list sessions, kill sessions, and exit.")
+        if expected_session_proof_command and not session_proof_seen:
+            raise ValueError("Exploit plan must run the selected session proof command.")
     else:
         if "check" not in lines or "exit -y" not in lines:
             raise ValueError("Check plan must include check and exit -y.")
@@ -273,37 +375,48 @@ def plan_proof_command(
     provider: str = "gpt_oss",
     use_llm: bool = False,
 ) -> dict[str, Any]:
-    fallback = fallback_proof_command()
+    fallback = fallback_proof_command(context)
     if not use_llm:
         return fallback
+    platform = fallback["platform"]
+    candidates = proof_commands_for_platform(platform)
     prompt = f"""
 You choose one harmless command-execution proof command for an authorized isolated lab.
+
+Inferred target command platform: {platform}
 
 Context:
 {json.dumps(context, indent=2, default=str)[:4000]}
 
 Allowed commands:
-{json.dumps(ALLOWED_PROOF_COMMANDS, indent=2)}
+{json.dumps(candidates, indent=2)}
 
 Return strict JSON only:
 {{
-  "command": "id",
+  "command": "{fallback['command']}",
   "reason": "short reason"
 }}
 
 Rules:
 - Choose exactly one command from the allowed command keys.
 - Do not invent commands, arguments, shell metacharacters, file writes, downloads, persistence, or cleanup commands.
-- Prefer a command that gives observable identity/platform proof.
+- Use only commands compatible with the inferred target platform.
+- Prefer deterministic marker proof when the target platform is unknown.
+- Otherwise prefer observable identity or platform proof.
 """
     try:
         raw = call_redteam_llm(prompt, settings=load_settings(), provider=provider)
         parsed = parse_json(raw)
-        command = validate_proof_command(str(parsed.get("command") or ""))
+        command = validate_proof_command(
+            str(parsed.get("command") or ""),
+            platform=platform,
+        )
         return {
             "command": command,
             "reason": str(parsed.get("reason") or "LLM selected a validated proof command."),
             "generated_by": "llm",
+            "platform": platform,
+            "candidates": list(candidates),
             "llm_raw": raw[:1500],
         }
     except Exception as exc:
@@ -312,19 +425,80 @@ Rules:
         return {**fallback, "planner_error": f"{type(exc).__name__}: {exc}"}
 
 
-def fallback_proof_command() -> dict[str, Any]:
+def fallback_proof_command(context: dict[str, Any] | None = None) -> dict[str, Any]:
+    platform = infer_proof_platform(context or {})
+    command = {
+        "unix": "id",
+        "macos": "id",
+        "windows": f"echo {PROOF_MARKER}",
+        "unknown": f"echo {PROOF_MARKER}",
+    }[platform]
     return {
-        "command": "id",
-        "reason": "Deterministic fallback command-execution proof.",
+        "command": command,
+        "reason": f"Deterministic {platform} command-execution proof.",
         "generated_by": "fallback",
+        "platform": platform,
+        "candidates": list(proof_commands_for_platform(platform)),
     }
 
 
-def validate_proof_command(command: str) -> str:
+def validate_proof_command(command: str, *, platform: str | None = None) -> str:
     normalized = re.sub(r"\s+", " ", command.strip())
     if normalized not in ALLOWED_PROOF_COMMANDS:
         raise ValueError(f"Proof command not allowed: {command}")
+    if platform and normalized not in proof_commands_for_platform(platform):
+        raise ValueError(
+            f"Proof command {normalized!r} is not allowed for platform {platform!r}."
+        )
     return normalized
+
+
+def proof_commands_for_platform(platform: str) -> dict[str, str]:
+    normalized = platform if platform in PROOF_COMMAND_PREFERENCES else "unknown"
+    return {
+        command: ALLOWED_PROOF_COMMANDS[command]
+        for command in PROOF_COMMAND_PREFERENCES[normalized]
+    }
+
+
+def infer_proof_platform(context: dict[str, Any]) -> str:
+    selected_payload = str(context.get("selected_payload") or "").lower()
+    if "windows" in selected_payload:
+        return "windows"
+    if any(term in selected_payload for term in ("cmd/unix/", "cmd/linux/", "linux/")):
+        return "unix"
+    if any(term in selected_payload for term in ("osx/", "macos/", "darwin/")):
+        return "macos"
+
+    evidence = " ".join(
+        [
+            scalar_context(context.get("platform")),
+            scalar_context(context.get("module")),
+            scalar_context(context.get("service")),
+            scalar_context(context.get("description")),
+            scalar_context(context.get("targets")),
+        ]
+    ).lower()
+    if re.search(r"\b(windows|win32|win64|microsoft|iis)\b", evidence):
+        return "windows"
+    if re.search(r"\b(macos|mac os|osx|darwin)\b", evidence):
+        return "macos"
+    if re.search(r"\b(linux|unix|freebsd|openbsd|netbsd|solaris|sunos|aix)\b", evidence):
+        return "unix"
+    return "unknown"
+
+
+def scalar_context(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return " ".join(
+            f"{key} {scalar_context(item)}"
+            for key, item in value.items()
+        )
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(scalar_context(item) for item in value)
+    return str(value)
 
 
 def execute_command(argv: list[str], *, timeout: int) -> tuple[subprocess.CompletedProcess[str], float]:

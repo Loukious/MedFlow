@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +20,7 @@ REPO_SOURCES = {
     "payloadsallthethings_curated",
     "nuclei_templates_metadata",
 }
-DEFAULT_SOURCES = {"owasp_wstg", "owasp_cheat_sheets"}
+DEFAULT_SOURCES = REPO_SOURCES
 
 
 def load_config(path: Path = CONFIG) -> dict[str, Any]:
@@ -28,6 +29,17 @@ def load_config(path: Path = CONFIG) -> dict[str, Any]:
 
 def run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=False, timeout=1800)
+
+
+def revision(dest: Path) -> str:
+    result = run(["git", "rev-parse", "HEAD"], cwd=dest)
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def result_with_revision(result: dict[str, Any], dest: Path) -> dict[str, Any]:
+    if dest.is_dir() and (dest / ".git").exists():
+        result["revision"] = revision(dest)
+    return result
 
 
 def sync_source(source: dict[str, Any], dest_root: Path, refresh: bool) -> dict[str, Any]:
@@ -39,11 +51,32 @@ def sync_source(source: dict[str, Any], dest_root: Path, refresh: bool) -> dict[
     if dest.exists() and (dest / ".git").exists():
         if refresh:
             result = run(["git", "pull", "--ff-only"], cwd=dest)
-            return {"id": source_id, "status": "updated" if result.returncode == 0 else "update_failed", "path": str(dest), "stderr": result.stderr[-1000:]}
-        return {"id": source_id, "status": "exists", "path": str(dest)}
+            return result_with_revision(
+                {
+                    "id": source_id,
+                    "status": "updated" if result.returncode == 0 else "update_failed",
+                    "path": str(dest),
+                    "url": url,
+                    "stderr": result.stderr[-1000:],
+                },
+                dest,
+            )
+        return result_with_revision(
+            {"id": source_id, "status": "exists", "path": str(dest), "url": url},
+            dest,
+        )
     dest.parent.mkdir(parents=True, exist_ok=True)
-    result = run(["git", "clone", "--depth", "1", url, str(dest)])
-    return {"id": source_id, "status": "cloned" if result.returncode == 0 else "clone_failed", "path": str(dest), "stderr": result.stderr[-1000:]}
+    result = run(["git", "clone", "--depth", "1", "--filter=blob:none", url, str(dest)])
+    return result_with_revision(
+        {
+            "id": source_id,
+            "status": "cloned" if result.returncode == 0 else "clone_failed",
+            "path": str(dest),
+            "url": url,
+            "stderr": result.stderr[-1000:],
+        },
+        dest,
+    )
 
 
 def main() -> None:
@@ -63,7 +96,18 @@ def main() -> None:
         for source in config.get("sources", [])
         if str(source["id"]) in requested
     ]
-    print(json.dumps({"destination": str(args.dest), "results": results}, indent=2))
+    manifest = {
+        "schema_version": 1,
+        "synced_at": datetime.now(timezone.utc).isoformat(),
+        "destination": str(args.dest),
+        "results": results,
+    }
+    args.dest.mkdir(parents=True, exist_ok=True)
+    (args.dest / "sync_manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(json.dumps(manifest, indent=2))
 
 
 if __name__ == "__main__":

@@ -161,6 +161,10 @@ The result must be JSON-serializable. Fields allowed, verified, exploited, incon
 must be booleans when present. A positive verified or exploited result must include proof_output or
 evidence, and exploited=true requires verified=true. Use tool_error=true only for a broken tool or
 internal execution failure, not when the target simply has no finding.
+For command-execution validation, never assume the target is Unix. Read context["proof_policy"],
+use exactly one command from its allowed_commands keys (prefer default_command), and report the
+proof platform and command alongside the observed output. The exact context["proof_marker"] output
+is valid proof on an unknown platform. Do not compose commands or add shell operators or arguments.
 Return strict JSON with keys:
 spec, code
 

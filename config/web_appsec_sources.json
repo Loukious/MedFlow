@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "description": "Web application security knowledge sources for MedFlow web pentesting agents.",
   "sources": [
     {
@@ -7,14 +7,35 @@
       "name": "OWASP Web Security Testing Guide",
       "type": "methodology",
       "url": "https://github.com/OWASP/wstg",
-      "license_note": "OWASP project content; keep source attribution in metadata."
+      "license_note": "OWASP project content; keep source attribution in metadata.",
+      "ingestion": {
+        "mode": "markdown",
+        "collection": "web_methodology_db",
+        "include": [
+          "document/**/*.md",
+          "checklists/*.md"
+        ],
+        "exclude": [
+          "**/README.md"
+        ],
+        "strip_code_blocks": false
+      }
     },
     {
       "id": "owasp_cheat_sheets",
       "name": "OWASP Cheat Sheet Series",
       "type": "defense-guidance",
       "url": "https://github.com/OWASP/CheatSheetSeries",
-      "license_note": "OWASP project content; keep source attribution in metadata."
+      "license_note": "OWASP project content; keep source attribution in metadata.",
+      "ingestion": {
+        "mode": "markdown",
+        "collection": "web_methodology_db",
+        "include": [
+          "cheatsheets/*.md"
+        ],
+        "exclude": [],
+        "strip_code_blocks": false
+      }
     },
     {
       "id": "owasp_api_top_10",
@@ -49,14 +70,40 @@
       "name": "PayloadsAllTheThings curated safe probe labels",
       "type": "payload-taxonomy",
       "url": "https://github.com/swisskyrepo/PayloadsAllTheThings",
-      "license_note": "Do not blindly execute raw payload lists; import only curated safe probe classes."
+      "license_note": "Do not blindly execute raw payload lists; import only curated safe probe classes.",
+      "ingestion": {
+        "mode": "markdown_taxonomy",
+        "collection": "web_payload_db",
+        "include": [
+          "**/*.md"
+        ],
+        "exclude": [
+          ".github/**",
+          "Methodology and Resources/**",
+          "_LEARNING_AND_SOCIALS/**",
+          "_template_vuln/**",
+          "CONTRIBUTING.md",
+          "README.md",
+          "DISCLAIMER.md"
+        ],
+        "strip_code_blocks": true
+      }
     },
     {
       "id": "nuclei_templates_metadata",
       "name": "Nuclei template metadata",
       "type": "scanner-template-metadata",
       "url": "https://github.com/projectdiscovery/nuclei-templates",
-      "license_note": "Use template metadata and severity/tags as capability context."
+      "license_note": "Use template metadata and severity/tags as capability context.",
+      "ingestion": {
+        "mode": "nuclei_metadata",
+        "collection": "web_payload_db",
+        "include": [
+          "http/**/*.yaml",
+          "http/**/*.yml"
+        ],
+        "exclude": []
+      }
     }
   ]
 }

@@ -57,7 +57,13 @@ def cmd_ingest_healthcare(args: argparse.Namespace) -> None:
 
 def cmd_ingest_web_appsec(args: argparse.Namespace) -> None:
     settings = load_settings()
-    counts = ingest_web_appsec_kb(settings.chroma_dir, settings.embedding_model, source_root=Path(args.source_root), limit=args.limit)
+    counts = ingest_web_appsec_kb(
+        settings.chroma_dir,
+        settings.embedding_model,
+        source_root=Path(args.source_root),
+        limit=args.limit,
+        reset=not args.append,
+    )
     table = Table("Collection", "Documents")
     for name, count in sorted(counts.items()):
         table.add_row(name, str(count))
@@ -91,9 +97,17 @@ def build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("path")
     ingest.set_defaults(func=cmd_ingest_healthcare)
 
-    web = sub.add_parser("ingest-web-appsec", help="Ingest web appsec methodology and safe probe KB documents")
+    web = sub.add_parser(
+        "ingest-web-appsec",
+        help="Rebuild web appsec methodology and curated capability metadata collections",
+    )
     web.add_argument("--source-root", default=str(load_settings().root / "data" / "web_appsec_sources"))
     web.add_argument("--limit", type=int, default=None)
+    web.add_argument(
+        "--append",
+        action="store_true",
+        help="Upsert without deleting stale web collection documents first.",
+    )
     web.set_defaults(func=cmd_ingest_web_appsec)
     return parser
 
